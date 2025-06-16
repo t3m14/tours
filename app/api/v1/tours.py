@@ -568,3 +568,238 @@ async def search_tours_by_hotel(
     except Exception as e:
         logger.error(f"Ошибка при поиске по отелю: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Добавьте эти эндпоинты в файл app/api/v1/tours.py
+
+@router.get("/debug/search-status/{request_id}")
+async def debug_search_status(request_id: str):
+    """
+    Детальная диагностика статуса поиска
+    """
+    try:
+        logger.info(f"🔍 Диагностика поиска {request_id}")
+        
+        # Получаем сырой ответ от TourVisor
+        raw_status = await tourvisor_client.get_search_status(request_id)
+        logger.info(f"📄 Сырой статус: {raw_status}")
+        
+        # Получаем сырые результаты
+        raw_results = await tourvisor_client.get_search_results(request_id, 1, 5)
+        logger.info(f"📄 Сырые результаты: {str(raw_results)[:500]}...")
+        
+        return {
+            "request_id": request_id,
+            "raw_status": raw_status,
+            "raw_results_preview": str(raw_results)[:1000],
+            "parsed_status": {
+                "has_data": bool(raw_status.get("data")),
+                "has_status": bool(raw_status.get("data", {}).get("status")),
+                "status_keys": list(raw_status.get("data", {}).get("status", {}).keys()) if raw_status.get("data", {}).get("status") else []
+            },
+            "parsed_results": {
+                "has_data": bool(raw_results.get("data")),
+                "has_result": bool(raw_results.get("data", {}).get("result")),
+                "has_hotels": bool(raw_results.get("data", {}).get("result", {}).get("hotel")),
+                "result_keys": list(raw_results.get("data", {}).keys()) if raw_results.get("data") else []
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка диагностики: {e}")
+        return {"error": str(e), "request_id": request_id}
+
+@router.post("/debug/test-search")
+async def debug_test_search():
+    """
+    Тестовый поиск с детальным логированием
+    """
+    try:
+        # Простые параметры поиска
+        search_params = {
+            "departure": 1,  # Москва
+            "country": 1,    # Египет
+            "datefrom": (datetime.now() + timedelta(days=7)).strftime("%d.%m.%Y"),
+            "dateto": (datetime.now() + timedelta(days=14)).strftime("%d.%m.%Y"),
+            "nightsfrom": 7,
+            "nightsto": 10,
+            "adults": 2,
+            "child": 0
+        }
+        
+        logger.info(f"🧪 Запуск тестового поиска с параметрами: {search_params}")
+        
+        # 1. Запускаем поиск
+        request_id = await tourvisor_client.search_tours(search_params)
+        logger.info(f"📝 Получен request_id: {request_id}")
+        
+        # 2. Следим за статусом
+        statuses = []
+        for i in range(20):  # 20 попыток по 2 секунды = 40 секунд
+            await asyncio.sleep(2)
+            
+            try:
+                status_result = await tourvisor_client.get_search_status(request_id)
+                status_data = status_result.get("data", {}).get("status", {})
+                
+                status_info = {
+                    "attempt": i + 1,
+                    "timestamp": datetime.now().isoformat(),
+                    "state": status_data.get("state", "unknown"),
+                    "progress": status_data.get("progress", 0),
+                    "hotels_found": status_data.get("hotelsfound", 0),
+                    "tours_found": status_data.get("toursfound", 0),
+                    "min_price": status_data.get("minprice"),
+                    "time_passed": status_data.get("timepassed", 0)
+                }
+                
+                statuses.append(status_info)
+                logger.info(f"🔄 Попытка {i+1}: {status_info}")
+                
+                # Выходим если поиск завершен
+                if status_data.get("state") == "finished":
+                    logger.info(f"✅ Поиск завершен на попытке {i+1}")
+                    break
+                    
+                # Или если найдены отели и достаточный прогресс
+                if status_data.get("hotelsfound", 0) > 0 and status_data.get("progress", 0) >= 50:
+                    logger.info(f"✅ Найдены отели на попытке {i+1}")
+                    break
+                    
+            except Exception as status_error:
+                logger.error(f"❌ Ошибка получения статуса на попытке {i+1}: {status_error}")
+                statuses.append({
+                    "attempt": i + 1,
+                    "error": str(status_error)
+                })
+        
+        # 3. Получаем финальные результаты
+        try:
+            final_results = await tourvisor_client.get_search_results(request_id, 1, 5)
+            results_summary = {
+                "has_data": bool(final_results.get("data")),
+                "has_hotels": bool(final_results.get("data", {}).get("result", {}).get("hotel")),
+                "hotels_count": len(final_results.get("data", {}).get("result", {}).get("hotel", [])) if isinstance(final_results.get("data", {}).get("result", {}).get("hotel", []), list) else (1 if final_results.get("data", {}).get("result", {}).get("hotel") else 0),
+                "sample_hotel": final_results.get("data", {}).get("result", {}).get("hotel", [{}])[0] if isinstance(final_results.get("data", {}).get("result", {}).get("hotel", []), list) and final_results.get("data", {}).get("result", {}).get("hotel", []) else final_results.get("data", {}).get("result", {}).get("hotel", {}) if final_results.get("data", {}).get("result", {}).get("hotel") else {}
+            }
+        except Exception as results_error:
+            logger.error(f"❌ Ошибка получения результатов: {results_error}")
+            results_summary = {"error": str(results_error)}
+        
+        return {
+            "success": True,
+            "search_params": search_params,
+            "request_id": request_id,
+            "status_progression": statuses,
+            "final_results": results_summary,
+            "summary": {
+                "total_attempts": len(statuses),
+                "final_state": statuses[-1].get("state", "unknown") if statuses else "no_status",
+                "max_progress": max([s.get("progress", 0) for s in statuses if "progress" in s], default=0),
+                "max_hotels": max([s.get("hotels_found", 0) for s in statuses if "hotels_found" in s], default=0)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка тестового поиска: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@router.get("/debug/cache-status")
+async def debug_cache_status():
+    """
+    Проверка состояния кэша
+    """
+    try:
+        cache_keys = [
+            "random_tours_from_search",
+            "reference:departure",
+            "reference:country", 
+            "reference:meal",
+            "reference:stars",
+            "hot_tours:city_1",
+            "directions_with_prices_search"
+        ]
+        
+        cache_status = {}
+        for key in cache_keys:
+            try:
+                exists = await cache_service.exists(key)
+                data = await cache_service.get(key) if exists else None
+                
+                cache_status[key] = {
+                    "exists": exists,
+                    "data_type": type(data).__name__ if data else None,
+                    "data_size": len(data) if isinstance(data, (list, dict, str)) else None,
+                    "preview": str(data)[:100] if data else None
+                }
+            except Exception as key_error:
+                cache_status[key] = {"error": str(key_error)}
+        
+        return {
+            "cache_status": cache_status,
+            "redis_info": "Connected" if await cache_service.exists("health_check") else "Disconnected"
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.post("/debug/force-regenerate-tours")
+async def debug_force_regenerate():
+    """
+    Принудительная регенерация случайных туров для отладки
+    """
+    try:
+        logger.info("🔧 Принудительная регенерация туров...")
+        
+        # Очищаем кэш
+        await cache_service.delete("random_tours_from_search")
+        
+        # Генерируем новые туры
+        from app.tasks.random_tours_update import RandomToursService
+        service = RandomToursService()
+        await service.update_random_tours()
+        
+        # Проверяем результат
+        new_tours = await cache_service.get("random_tours_from_search")
+        
+        return {
+            "success": True,
+            "tours_generated": len(new_tours) if new_tours else 0,
+            "tours_preview": new_tours[:2] if new_tours else None
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка принудительной регенерации: {e}")
+        return {"success": False, "error": str(e)}
+
+@router.get("/debug/tourvisor-raw/{endpoint}")
+async def debug_tourvisor_raw(endpoint: str, params: str = ""):
+    """
+    Прямой запрос к TourVisor API для отладки
+    """
+    try:
+        # Парсим параметры
+        parsed_params = {}
+        if params:
+            for param in params.split("&"):
+                if "=" in param:
+                    key, value = param.split("=", 1)
+                    parsed_params[key] = value
+        
+        # Выполняем запрос
+        result = await tourvisor_client._make_request(f"{endpoint}.php", parsed_params)
+        
+        return {
+            "endpoint": endpoint,
+            "params": parsed_params,
+            "result": result,
+            "result_preview": str(result)[:500]
+        }
+        
+    except Exception as e:
+        return {
+            "endpoint": endpoint,
+            "error": str(e)
+        }

@@ -184,7 +184,7 @@ class TourService:
                     request_id = await tourvisor_client.search_tours(search_params)
                     logger.info(f"📝 Получен request_id: {request_id}")
                     
-                    # Ждем результатов поиска
+                    # Ждем результатов поиска с увеличенным временем ожидания
                     tour_found = await self._wait_and_get_tour_from_search(request_id, search_params)
                     
                     if tour_found:
@@ -270,55 +270,89 @@ class TourService:
     async def _wait_and_get_tour_from_search(self, request_id: str, search_params: Dict[str, Any]) -> Optional[HotTourInfo]:
         """Ожидание результатов поиска и получение одного случайного тура"""
         try:
-            # Ждем завершения поиска (максимум 10 секунд)
-            for attempt in range(10):
+            # Увеличиваем время ожидания до 30 секунд и проверяем статус чаще
+            max_attempts = 30
+            for attempt in range(max_attempts):
                 await asyncio.sleep(1)
                 
-                status_result = await tourvisor_client.get_search_status(request_id)
-                status_data = status_result.get("data", {}).get("status", {})
-                state = status_data.get("state", "searching")
-                
-                logger.debug(f"🔄 Попытка {attempt+1}: статус = {state}")
-                
-                if state == "finished":
-                    break
+                try:
+                    status_result = await tourvisor_client.get_search_status(request_id)
+                    status_data = status_result.get("data", {}).get("status", {})
+                    state = status_data.get("state", "searching")
+                    progress = status_data.get("progress", 0)
+                    hotels_found = status_data.get("hotelsfound", 0)
+                    
+                    logger.debug(f"🔄 Попытка {attempt+1}/{max_attempts}: статус = {state}, прогресс = {progress}%, отелей = {hotels_found}")
+                    
+                    # Проверяем есть ли уже отели или поиск завершен
+                    if state == "finished" or (progress >= 50 and hotels_found > 0):
+                        logger.info(f"✅ Поиск готов: состояние={state}, прогресс={progress}%, отелей={hotels_found}")
+                        break
+                        
+                except Exception as status_error:
+                    logger.warning(f"⚠️ Ошибка получения статуса {attempt+1}: {status_error}")
+                    continue
             else:
-                logger.warning(f"⏰ Таймаут ожидания поиска {request_id}")
-                return None
+                logger.warning(f"⏰ Таймаут ожидания поиска {request_id} после {max_attempts} попыток")
+                
+                # Попробуем получить результаты даже при таймауте
+                try:
+                    logger.info("🔄 Попытка получения частичных результатов...")
+                    results = await tourvisor_client.get_search_results(request_id, 1, 5)
+                    data = results.get("data", {})
+                    
+                    # Проверяем есть ли хоть что-то
+                    status_data = data.get("status", {})
+                    hotels_found = status_data.get("hotelsfound", 0)
+                    
+                    if hotels_found > 0:
+                        logger.info(f"✅ Найдены частичные результаты: {hotels_found} отелей")
+                    else:
+                        logger.warning("❌ Нет результатов даже при таймауте")
+                        return None
+                        
+                except Exception as partial_error:
+                    logger.error(f"❌ Ошибка получения частичных результатов: {partial_error}")
+                    return None
             
             # Получаем результаты
-            results = await tourvisor_client.get_search_results(request_id, 1, 10)
-            data = results.get("data", {})
-            result_data = data.get("result", {})
-            hotel_list = result_data.get("hotel", [])
-            
-            if not isinstance(hotel_list, list):
-                hotel_list = [hotel_list] if hotel_list else []
-            
-            if not hotel_list:
-                logger.debug(f"📭 Нет отелей в результатах поиска")
+            try:
+                results = await tourvisor_client.get_search_results(request_id, 1, 10)
+                data = results.get("data", {})
+                result_data = data.get("result", {})
+                hotel_list = result_data.get("hotel", [])
+                
+                if not isinstance(hotel_list, list):
+                    hotel_list = [hotel_list] if hotel_list else []
+                
+                if not hotel_list:
+                    logger.debug(f"📭 Нет отелей в результатах поиска")
+                    return None
+                
+                # Выбираем случайный отель
+                random_hotel = random.choice(hotel_list)
+                tours_data = random_hotel.get("tours", {}).get("tour", [])
+                
+                if not isinstance(tours_data, list):
+                    tours_data = [tours_data] if tours_data else []
+                
+                if not tours_data:
+                    logger.debug(f"📭 Нет туров в отеле")
+                    return None
+                
+                # Выбираем случайный тур
+                random_tour_data = random.choice(tours_data)
+                
+                # Преобразуем в формат HotTourInfo
+                hot_tour_data = self._convert_search_result_to_hot_tour(
+                    random_hotel, random_tour_data, search_params
+                )
+                
+                return HotTourInfo(**hot_tour_data)
+                
+            except Exception as results_error:
+                logger.error(f"❌ Ошибка при получении результатов: {results_error}")
                 return None
-            
-            # Выбираем случайный отель
-            random_hotel = random.choice(hotel_list)
-            tours_data = random_hotel.get("tours", {}).get("tour", [])
-            
-            if not isinstance(tours_data, list):
-                tours_data = [tours_data] if tours_data else []
-            
-            if not tours_data:
-                logger.debug(f"📭 Нет туров в отеле")
-                return None
-            
-            # Выбираем случайный тур
-            random_tour_data = random.choice(tours_data)
-            
-            # Преобразуем в формат HotTourInfo
-            hot_tour_data = self._convert_search_result_to_hot_tour(
-                random_hotel, random_tour_data, search_params
-            )
-            
-            return HotTourInfo(**hot_tour_data)
             
         except Exception as e:
             logger.error(f"❌ Ошибка при получении тура из поиска: {e}")
@@ -395,21 +429,16 @@ class TourService:
         # Попытка получить из кэша
         cached_directions = await self.cache.get(cache_key)
         if cached_directions:
-            return cached_directions
+            return [DirectionInfo(**direction) for direction in cached_directions]
         
         return await self._generate_directions_via_search()
     
     async def _generate_directions_via_search(self) -> List[DirectionInfo]:
         """Генерация направлений с ценами через поиск"""
+        cache_key = "directions_with_prices_search"  # ИСПРАВЛЕНО: добавили определение переменной
+        
         try:
             directions = []
-            
-            # Получаем справочник стран
-            countries_data = await tourvisor_client.get_references("country")
-            countries_list = countries_data.get("lists", {}).get("countries", {}).get("country", [])
-            
-            if not isinstance(countries_list, list):
-                countries_list = [countries_list] if countries_list else []
             
             # Берем популярные страны
             popular_countries = settings.POPULAR_COUNTRIES[:6]  # Первые 6 стран
@@ -433,12 +462,8 @@ class TourService:
                     
                     request_id = await tourvisor_client.search_tours(search_params)
                     
-                    # Ждем немного и получаем результаты
-                    await asyncio.sleep(3)
-                    results = await tourvisor_client.get_search_results(request_id, 1, 5)
-                    
-                    # Находим минимальную цену
-                    min_price = self._extract_min_price_from_results(results)
+                    # Ждем результатов с увеличенным временем
+                    min_price = await self._get_min_price_from_search(request_id)
                     
                     direction = DirectionInfo(
                         name=country_name,
@@ -457,13 +482,55 @@ class TourService:
                     continue
             
             # Кэшируем на 6 часов
-            await self.cache.set(cache_key, directions, ttl=21600)
+            if directions:
+                await self.cache.set(
+                    cache_key, 
+                    [direction.dict() for direction in directions], 
+                    ttl=21600
+                )
             
             return directions
             
         except Exception as e:
             logger.error(f"❌ Ошибка при генерации направлений: {e}")
             return []
+    
+    async def _get_min_price_from_search(self, request_id: str) -> float:
+        """Получение минимальной цены из поиска"""
+        try:
+            # Ждем до 15 секунд
+            for attempt in range(15):
+                await asyncio.sleep(1)
+                
+                try:
+                    status_result = await tourvisor_client.get_search_status(request_id)
+                    status_data = status_result.get("data", {}).get("status", {})
+                    
+                    state = status_data.get("state", "searching")
+                    min_price = status_data.get("minprice")
+                    progress = status_data.get("progress", 0)
+                    
+                    # Если есть минимальная цена или достаточный прогресс
+                    if min_price or state == "finished" or progress >= 50:
+                        if min_price:
+                            return float(min_price)
+                        
+                        # Попробуем получить из результатов
+                        results = await tourvisor_client.get_search_results(request_id, 1, 5)
+                        price = self._extract_min_price_from_results(results)
+                        if price < 500000:  # Разумная цена
+                            return price
+                        
+                except Exception as e:
+                    logger.warning(f"Ошибка получения статуса: {e}")
+                    continue
+            
+            # Если не получили цену, возвращаем дефолтную
+            return 50000.0
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения минимальной цены: {e}")
+            return 50000.0
     
     def _extract_min_price_from_results(self, results: Dict[str, Any]) -> float:
         """Извлечение минимальной цены из результатов поиска"""
@@ -576,10 +643,10 @@ class TourService:
                 search_response = await self.search_tours(search_request)
                 
                 # Ждем завершения поиска
-                for _ in range(10):  # Максимум 10 попыток
-                    await asyncio.sleep(1)
+                for _ in range(15):  # Максимум 15 попыток
+                    await asyncio.sleep(2)
                     status = await self.get_search_status(search_response.request_id)
-                    if status.state == "finished":
+                    if status.state == "finished" or status.progress >= 50:
                         break
                 
                 # Получаем результаты

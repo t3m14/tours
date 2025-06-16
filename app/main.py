@@ -15,16 +15,40 @@ logger = setup_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    logger.info("Запуск приложения...")
+    logger.info("🚀 Запуск приложения...")
     
-    # Запуск фоновых задач (теперь используют обычный поиск)
-    asyncio.create_task(update_random_tours())
-    # Пока отключаем прогрев кэша, так как он тоже использует горящие туры
-    # asyncio.create_task(warm_up_cache())
+    # Запуск фоновых задач
+    logger.info("🔧 Запуск фоновых задач...")
+    
+    # Задача обновления случайных туров (быстрая)
+    random_tours_task = asyncio.create_task(update_random_tours())
+    logger.info("✅ Задача обновления случайных туров запущена")
+    
+    # Задача прогрева кэша (медленная, запускаем с задержкой)
+    async def delayed_cache_warmup():
+        await asyncio.sleep(30)  # Ждем 30 секунд после старта
+        await warm_up_cache()
+    
+    cache_warmup_task = asyncio.create_task(delayed_cache_warmup())
+    logger.info("✅ Задача прогрева кэша запущена (с задержкой)")
     
     yield
     
-    logger.info("Остановка приложения...")
+    logger.info("🛑 Остановка приложения...")
+    
+    # Отменяем фоновые задачи
+    random_tours_task.cancel()
+    cache_warmup_task.cancel()
+    
+    try:
+        await random_tours_task
+    except asyncio.CancelledError:
+        logger.info("❌ Задача случайных туров отменена")
+    
+    try:
+        await cache_warmup_task
+    except asyncio.CancelledError:
+        logger.info("❌ Задача прогрева кэша отменена")
 
 app = FastAPI(
     title="Travel Agency Backend",
@@ -56,11 +80,92 @@ async def websocket_tours(websocket: WebSocket, request_id: str):
 
 @app.get("/")
 async def root():
-    return {"message": "Travel Agency Backend API", "version": "1.0.0"}
+    return {
+        "message": "Travel Agency Backend API", 
+        "version": "1.0.0",
+        "status": "running",
+        "features": [
+            "tour_search",
+            "random_tours", 
+            "hotel_info",
+            "references",
+            "applications",
+            "websocket_support",
+            "sitemap_generation"
+        ]
+    }
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    """Проверка здоровья приложения"""
+    try:
+        # Проверяем кэш
+        from app.services.cache_service import cache_service
+        cache_working = await cache_service.exists("health_check")
+        await cache_service.set("health_check", "ok", ttl=60)
+        
+        # Проверяем TourVisor API (легкий запрос)
+        from app.core.tourvisor_client import tourvisor_client
+        api_working = False
+        try:
+            references = await tourvisor_client.get_references("departure")
+            api_working = bool(references)
+        except:
+            api_working = False
+        
+        return {
+            "status": "healthy",
+            "timestamp": asyncio.get_event_loop().time(),
+            "components": {
+                "cache": "ok" if cache_working else "error",
+                "tourvisor_api": "ok" if api_working else "error"
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка health check: {e}")
+        return {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+
+@app.get("/status")
+async def get_system_status():
+    """Расширенная информация о состоянии системы"""
+    try:
+        from app.services.cache_service import cache_service
+        
+        # Проверяем различные кэши
+        caches_status = {}
+        cache_keys = [
+            "random_tours_from_search",
+            "reference:departure", 
+            "reference:country",
+            "hot_tours:city_1"
+        ]
+        
+        for key in cache_keys:
+            exists = await cache_service.exists(key)
+            caches_status[key] = "present" if exists else "missing"
+        
+        return {
+            "system": "travel_agency_backend",
+            "version": "1.0.0",
+            "uptime_info": "running",
+            "cache_status": caches_status,
+            "endpoints": {
+                "tours": "/api/v1/tours/",
+                "hotels": "/api/v1/hotels/",
+                "references": "/api/v1/references/",
+                "applications": "/api/v1/applications/",
+                "sitemap": "/sitemap",
+                "websocket": "/ws/tours/{request_id}"
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения статуса: {e}")
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn

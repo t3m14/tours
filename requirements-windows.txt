@@ -1,0 +1,32 @@
+# Для Windows с Python 3.13 - используем стабильные версии
+
+# FastAPI и основные зависимости
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Pydantic - версия без Rust зависимостей
+pydantic==1.10.15
+pydantic-settings
+
+# HTTP клиент
+aiohttp==3.9.5
+
+# Redis для кэширования
+redis==5.0.7
+
+# Валидация данных
+email-validator==1.3.1
+
+# Работа с датами
+python-dateutil==2.8.2
+
+# Переменные окружения
+python-dotenv==1.0.1
+
+# Дополнительные утилиты
+typing-extensions==4.8.0
+
+# Если нужны более новые версии pydantic, установите Microsoft C++ Build Tools
+# https://visualstudio.microsoft.com/visual-cpp-build-tools/
+# или используйте предкомпилированные wheels:
+# pip install --only-binary=all pydantic==2.8.2

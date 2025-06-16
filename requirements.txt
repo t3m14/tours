@@ -1,0 +1,42 @@
+# FastAPI и основные зависимости
+fastapi==0.108.0
+uvicorn[standard]==0.25.0
+
+# Pydantic - используем более новую версию с бинарными wheels
+pydantic==2.8.2
+pydantic-settings==2.4.0
+
+# HTTP клиент
+aiohttp==3.10.5
+
+# Redis для кэширования  
+redis==5.0.8
+
+# Email (используем стандартный smtplib вместо aiosmtplib)
+# aiosmtplib==3.0.1 - закомментировано, используем встроенный smtplib
+
+# Валидация данных
+email-validator==2.2.0
+
+# Работа с датами
+python-dateutil==2.9.0
+
+# Переменные окружения
+python-dotenv==1.0.1
+
+# Дополнительные утилиты
+typing-extensions==4.12.2
+
+# Для Windows совместимости
+# Если все еще есть проблемы с Rust, можно использовать предыдущие версии:
+# pydantic==1.10.15
+# fastapi==0.104.1
+
+# Тестирование (опционально)
+# pytest==8.2.2
+# pytest-asyncio==0.23.7
+httpx
+
+
+transliteration
+APScheduler

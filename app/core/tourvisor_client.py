@@ -246,9 +246,21 @@ class TourVisorClient:
         for param in int_params:
             if param in validated_params:
                 try:
-                    validated_params[param] = int(validated_params[param])
-                except (ValueError, TypeError):
-                    logger.warning(f"⚠️ Некорректное значение {param}: {validated_params[param]}")
+                    value = validated_params[param]
+                    # Безопасное преобразование в int
+                    if isinstance(value, str):
+                        if value.strip():  # Проверяем, что строка не пустая
+                            validated_params[param] = int(value.strip())
+                        else:
+                            logger.warning(f"⚠️ Пустое значение для {param}, удаляем")
+                            del validated_params[param]
+                    elif isinstance(value, (int, float)):
+                        validated_params[param] = int(value)
+                    else:
+                        logger.warning(f"⚠️ Неподдерживаемый тип для {param}: {type(value)}")
+                        del validated_params[param]
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"⚠️ Некорректное значение {param}: {validated_params[param]} -> {e}")
                     # Удаляем некорректные значения
                     del validated_params[param]
         
@@ -442,7 +454,7 @@ class TourVisorClient:
             return normalized_result
             
         except Exception as e:
-            logger.error(f"❌ Ошибка получения статуса {request_id}: {e}")
+            logger.error(f"❌ Ошибка получения статуса {request_id}: {e.with_traceback}")
             raise
     
     def _normalize_status_response(self, result: Dict[str, Any], request_id: str) -> Dict[str, Any]:
@@ -466,11 +478,40 @@ class TourVisorClient:
         if any(field in result for field in status_fields):
             logger.info(f"🔧 Нормализация: статус прямо в корне для {request_id}")
             
-            # Собираем данные статуса
+            # Собираем данные статуса с безопасным преобразованием типов
             status_data = {}
             for field in status_fields:
                 if field in result:
-                    status_data[field] = result[field]
+                    value = result[field]
+                    try:
+                        # Безопасное преобразование значений
+                        if field in ["hotelsfound", "toursfound", "progress", "timepassed"]:
+                            # Целые числа
+                            if isinstance(value, str):
+                                status_data[field] = int(value) if value.strip() else 0
+                            elif isinstance(value, (int, float)):
+                                status_data[field] = int(value)
+                            else:
+                                status_data[field] = 0
+                        elif field == "minprice":
+                            # Дробные числа
+                            if isinstance(value, str):
+                                status_data[field] = float(value) if value.strip() else None
+                            elif isinstance(value, (int, float)):
+                                status_data[field] = float(value)
+                            else:
+                                status_data[field] = None
+                        else:  # state
+                            status_data[field] = str(value) if value is not None else ""
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"⚠️ Ошибка преобразования {field}: {value} -> {e}")
+                        # Значения по умолчанию
+                        if field in ["hotelsfound", "toursfound", "progress", "timepassed"]:
+                            status_data[field] = 0
+                        elif field == "minprice":
+                            status_data[field] = None
+                        else:
+                            status_data[field] = ""
             
             return {
                 "data": {
@@ -527,13 +568,39 @@ class TourVisorClient:
                     try:
                         value = data[field]
                         if field_type == int:
-                            found_data[field] = int(value) if value else 0
+                            # Проверяем, является ли значение строкой или числом
+                            if isinstance(value, str):
+                                # Если строка пустая или содержит только пробелы, используем 0
+                                if not value.strip():
+                                    found_data[field] = 0
+                                else:
+                                    found_data[field] = int(value)
+                            elif isinstance(value, (int, float)):
+                                found_data[field] = int(value)
+                            else:
+                                found_data[field] = 0
                         elif field_type == float:
-                            found_data[field] = float(value) if value else None
+                            # Аналогично для float
+                            if isinstance(value, str):
+                                if not value.strip():
+                                    found_data[field] = None
+                                else:
+                                    found_data[field] = float(value)
+                            elif isinstance(value, (int, float)):
+                                found_data[field] = float(value)
+                            else:
+                                found_data[field] = None
+                        else:  # str
+                            found_data[field] = str(value) if value is not None else ""
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"⚠️ Не удалось преобразовать {field}: {data[field]} -> {e}")
+                        # Устанавливаем значения по умолчанию в случае ошибки
+                        if field_type == int:
+                            found_data[field] = 0
+                        elif field_type == float:
+                            found_data[field] = None
                         else:
-                            found_data[field] = str(value) if value else ""
-                    except (ValueError, TypeError):
-                        logger.warning(f"⚠️ Не удалось преобразовать {field}: {data[field]}")
+                            found_data[field] = ""
                         continue
             
             # Если нашли хотя бы несколько полей, возвращаем

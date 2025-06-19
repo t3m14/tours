@@ -7,6 +7,8 @@ from app.services.cache_service import cache_service
 from app.services.directions_service import directions_service
 from app.config import settings
 from app.utils.logger import setup_logger
+from app.services.random_tours_service import random_tours_service
+from app.models.tour import RandomTourRequest
 
 logger = setup_logger(__name__)
 
@@ -25,9 +27,12 @@ class CacheWarmupService:
             # Прогреваем справочники (быстро и полезно)
             await self._warm_references()
             
-            # Прогреваем направления с фотографиями (заменяет горящие туры)
+            # Прогреваем направления с фотографиями
             await self._warm_directions()
-            
+
+            # Прогреваем случайные туры по всем типам отелей
+            await self._warm_random_tours_by_hotel_types()
+
             # Прогреваем популярные поисковые запросы (только если есть время)
             await self._warm_popular_searches_limited()
             
@@ -47,7 +52,46 @@ class CacheWarmupService:
             
         except Exception as e:
             logger.error(f"🌍 Ошибка при прогреве направлений: {e}")
-    
+
+    async def _warm_random_tours_by_hotel_types(self):
+        """Прогрев случайных туров по всем типам отелей"""
+        logger.info("🏨 Прогрев случайных туров по типам отелей...")
+        
+        hotel_types = ["active", "relax", "family", "health", "city", "beach", "deluxe"]
+        tour_counts = [6, 8, 10]  # Разные количества туров
+        
+        for hotel_type in hotel_types:
+            for count in tour_counts:
+                try:
+                    logger.info(f"🏨 Прогрев {count} туров типа '{hotel_type}'")
+                    
+                    # Создаем запрос с определенным типом отеля
+                    request = RandomTourRequest(count=count, hotel_types=[hotel_type])
+                    
+                    # Генерируем туры
+                    tours = await random_tours_service._generate_fully_random_tours(request)
+                    
+                    if tours:
+                        # Кэшируем под специальным ключом
+                        cache_key = f"random_tours_type_{hotel_type}_count_{count}"
+                        await cache_service.set(
+                            cache_key,
+                            [tour.dict() for tour in tours],
+                            ttl=settings.RANDOM_TOURS_CACHE_TTL
+                        )
+                        
+                        logger.info(f"✅ Закэшировано {len(tours)} туров типа '{hotel_type}' (count={count})")
+                    else:
+                        logger.warning(f"⚠️ Не удалось получить туры для типа '{hotel_type}'")
+                    
+                    # Задержка между запросами
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при прогреве туров типа '{hotel_type}': {e}")
+                    continue
+        
+        logger.info("✅ Прогрев туров по типам отелей завершен")
     async def _warm_popular_searches_limited(self):
         """Ограниченный прогрев популярных поисковых запросов"""
         logger.info("🔍 Прогрев популярных поисков (ограниченно)...")

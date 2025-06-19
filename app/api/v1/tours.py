@@ -475,3 +475,20 @@ async def get_system_status():
             "overall_health": "unhealthy",
             "error": str(e) 
         }
+@router.post("/random/clear-hotel-type-cache")
+async def clear_hotel_type_cache():
+    """
+    Очистка кэша туров по типам отелей
+    """
+    try:
+        cleared_count = await random_tours_service.clear_hotel_type_cache()
+        
+        return {
+            "success": True,
+            "message": f"Очищено {cleared_count} записей кэша туров по типам отелей",
+            "cleared_cache_keys": cleared_count
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при очистке кэша типов отелей: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -107,7 +107,7 @@ class RandomToursUpdateService:
             
             # Используем новый RandomToursService
             request = RandomTourRequest(count=self.target_count)
-            result = await random_tours_service._generate_random_tours_via_search(request.count)
+            result = await random_tours_service._generate_random_tours_multilevel(request)
             
             if result:
                 logger.info(f"🔍 Получено {len(result)} туров через поиск")

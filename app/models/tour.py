@@ -95,11 +95,16 @@ class SearchResponse(BaseModel):
 
 class RandomTourRequest(BaseModel):
     count: int = Field(6, ge=1, le=20, description="Количество случайных туров")
+    hotel_types: Optional[List[str]] = Field(
+        None, 
+        description="Типы отелей для фильтрации: active, relax, family, health, city, beach, deluxe"
+    )
     
     class Config:
         schema_extra = {
             "example": {
-                "count": 6
+                "count": 6,
+                "hotel_types": ["beach", "relax"]
             }
         }
 

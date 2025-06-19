@@ -72,18 +72,38 @@ async def continue_search(request_id: str):
         logger.error(f"Ошибка при продолжении поиска: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ========== СЛУЧАЙНЫЕ ТУРЫ ==========
+# ========== ПОЛНОСТЬЮ РАНДОМНЫЕ ТУРЫ С ФИЛЬТРАЦИЕЙ ==========
 
 @router.get("/random", response_model=List[HotTourInfo])
 async def get_random_tours_get(
-    count: int = Query(6, ge=1, le=20, description="Количество случайных туров")
+    count: int = Query(6, ge=1, le=20, description="Количество случайных туров"),
+    hotel_types: Optional[str] = Query(
+        None, 
+        description="Типы отелей через запятую: active,relax,family,health,city,beach,deluxe"
+    )
 ):
     """
-    Получение случайных туров через обычный поиск
+    Получение абсолютно случайных туров из любых стран и городов (GET метод)
+    
+    Параметры:
+    - count: количество туров (1-20)
+    - hotel_types: типы отелей через запятую (необязательно)
+    
+    Примеры:
+    - /api/v1/tours/random?count=8
+    - /api/v1/tours/random?count=6&hotel_types=beach,relax
+    - /api/v1/tours/random?count=10&hotel_types=deluxe
     """
     try:
-        request = RandomTourRequest(count=count)
-        logger.info(f"🎯 Запрос {request.count} случайных туров")
+        # Парсим типы отелей
+        hotel_types_list = None
+        if hotel_types:
+            hotel_types_list = [ht.strip() for ht in hotel_types.split(",") if ht.strip()]
+        
+        request = RandomTourRequest(count=count, hotel_types=hotel_types_list)
+        logger.info(f"🎯 GET запрос {request.count} рандомных туров")
+        if request.hotel_types:
+            logger.info(f"🏨 С фильтрацией по типам: {request.hotel_types}")
         
         result = await random_tours_service.get_random_tours(request)
         logger.info(f"✅ Возвращено {len(result)} туров")
@@ -96,13 +116,21 @@ async def get_random_tours_get(
 @router.post("/random", response_model=List[HotTourInfo])
 async def get_random_tours_post(request: RandomTourRequest = None):
     """
-    Получение случайных туров через обычный поиск (POST)
+    Получение абсолютно случайных туров из любых стран и городов (POST метод)
+    
+    Пример запроса:
+    {
+        "count": 8,
+        "hotel_types": ["beach", "relax", "deluxe"]
+    }
     """
     try:
         if request is None:
             request = RandomTourRequest()
         
-        logger.info(f"🎯 POST запрос {request.count} случайных туров")
+        logger.info(f"🎯 POST запрос {request.count} рандомных туров")
+        if request.hotel_types:
+            logger.info(f"🏨 С фильтрацией по типам: {request.hotel_types}")
         
         result = await random_tours_service.get_random_tours(request)
         logger.info(f"✅ Возвращено {len(result)} туров")
@@ -114,21 +142,128 @@ async def get_random_tours_post(request: RandomTourRequest = None):
 
 @router.get("/random/generate", response_model=List[HotTourInfo])
 async def generate_random_tours(
-    count: int = Query(6, ge=1, le=20, description="Количество случайных туров")
+    count: int = Query(6, ge=1, le=20, description="Количество случайных туров"),
+    hotel_types: Optional[str] = Query(
+        None,
+        description="Типы отелей через запятую: active,relax,family,health,city,beach,deluxe"
+    )
 ):
     """
     Принудительная генерация новых случайных туров (без кэша)
+    
+    Этот endpoint всегда генерирует новые туры, игнорируя кэш
     """
     try:
-        logger.info(f"🔄 Принудительная генерация {count} туров")
+        # Парсим типы отелей
+        hotel_types_list = None
+        if hotel_types:
+            hotel_types_list = [ht.strip() for ht in hotel_types.split(",") if ht.strip()]
         
-        result = await random_tours_service._generate_random_tours_via_search(count)
+        request = RandomTourRequest(count=count, hotel_types=hotel_types_list)
+        logger.info(f"🔄 Принудительная генерация {request.count} туров")
+        if request.hotel_types:
+            logger.info(f"🏨 С фильтрацией по типам: {request.hotel_types}")
+        
+        result = await random_tours_service._generate_fully_random_tours(request)
         logger.info(f"✅ Сгенерировано {len(result)} туров")
         
         return result
     except Exception as e:
         logger.error(f"❌ Ошибка при генерации туров: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/random/clear-cache")
+async def clear_random_tours_cache():
+    """
+    Очистка кэша случайных туров
+    """
+    try:
+        cleared_count = await random_tours_service.clear_random_tours_cache()
+        
+        return {
+            "success": True,
+            "message": f"Очищено {cleared_count} записей кэша случайных туров",
+            "cleared_cache_keys": cleared_count
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при очистке кэша: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ========== ИНФОРМАЦИЯ О ФИЛЬТРАХ ==========
+
+@router.get("/random/hotel-types")
+async def get_available_hotel_types():
+    """
+    Получение списка доступных типов отелей для фильтрации
+    """
+    return {
+        "available_hotel_types": [
+            {"code": "active", "name": "Активный отдых", "description": "Отели для активного отдыха"},
+            {"code": "relax", "name": "Спокойный отдых", "description": "Отели для спокойного отдыха"},
+            {"code": "family", "name": "Семейный отдых", "description": "Семейные отели"},
+            {"code": "health", "name": "Здоровье", "description": "SPA и wellness отели"},
+            {"code": "city", "name": "Городской", "description": "Городские отели"},
+            {"code": "beach", "name": "Пляжный", "description": "Пляжные отели"},
+            {"code": "deluxe", "name": "Люкс (VIP)", "description": "Роскошные отели"}
+        ],
+        "usage_examples": [
+            "GET /api/v1/tours/random?hotel_types=beach,relax",
+            "GET /api/v1/tours/random?count=10&hotel_types=deluxe",
+            "POST /api/v1/tours/random с body: {\"count\": 8, \"hotel_types\": [\"family\", \"beach\"]}"
+        ]
+    }
+
+@router.get("/random/stats")
+async def get_random_tours_stats():
+    """
+    Статистика системы случайных туров
+    """
+    try:
+        # Получаем информацию о кэше
+        cache_keys = await random_tours_service.cache.get_keys_pattern("random_tours_count_*")
+        
+        cache_info = {}
+        for key in cache_keys:
+            try:
+                cached_data = await random_tours_service.cache.get(key)
+                if cached_data:
+                    cache_info[key] = {
+                        "tours_count": len(cached_data),
+                        "sample_countries": list(set([tour.get("countryname", "Unknown") for tour in cached_data[:5]])),
+                        "sample_cities": list(set([tour.get("departurename", "Unknown") for tour in cached_data[:5]]))
+                    }
+            except:
+                cache_info[key] = {"error": "Cannot read cache"}
+        
+        return {
+            "system_info": {
+                "total_countries_available": len(random_tours_service.all_countries),
+                "total_cities_available": len(random_tours_service.all_cities),
+                "cache_ttl_seconds": 3600,
+                "max_tours_per_request": 20
+            },
+            "cache_status": {
+                "cached_variants": len(cache_keys),
+                "cache_details": cache_info
+            },
+            "supported_hotel_types": ["active", "relax", "family", "health", "city", "beach", "deluxe"],
+            "features": {
+                "fully_random_countries": True,
+                "fully_random_cities": True,
+                "hotel_type_filtering": True,
+                "random_dates": True,
+                "random_duration": True,
+                "random_tourists_count": True
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при получении статистики: {e}")
+        return {
+            "error": str(e),
+            "message": "Не удалось получить статистику"
+        }
 
 # ========== НАПРАВЛЕНИЯ С ФОТОГРАФИЯМИ ==========
 
@@ -164,252 +299,6 @@ async def refresh_directions():
         
     except Exception as e:
         logger.error(f"❌ Ошибка при обновлении направлений: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/directions/status")
-async def get_directions_status():
-    """
-    Статус системы направлений
-    """
-    try:
-        return await directions_service.get_directions_status()
-    except Exception as e:
-        return {
-            "error": str(e),
-            "recommendation": "use_refresh_endpoint"
-        }
-
-@router.get("/directions/fix-cache")
-async def fix_directions_cache():
-    """
-    Исправление проблем с кэшированием направлений
-    """
-    try:
-        return await directions_service.fix_cache_issues()
-    except Exception as e:
-        logger.error(f"❌ Ошибка при исправлении кэша: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ========== ДИАГНОСТИКА ФОТОГРАФИЙ ==========
-
-@router.get("/directions/test-photo/{country_code}")
-async def test_country_photo(country_code: int):
-    """
-    Тестирование получения фотографии для конкретной страны
-    """
-    try:
-        country_name = tour_service._get_country_name(country_code)
-        logger.info(f"🧪 Тестирование получения фото для {country_name} ({country_code})")
-        
-        # Тестируем все методы получения фото
-        results = {}
-        
-        # 1. Горящие туры
-        try:
-            hot_tours_photo = await photo_service._get_photo_via_hot_tours(country_code, country_name)
-            results["hot_tours"] = {
-                "success": bool(hot_tours_photo),
-                "photo_url": hot_tours_photo,
-                "method": "Hot tours API"
-            }
-        except Exception as e:
-            results["hot_tours"] = {
-                "success": False,
-                "error": str(e),
-                "method": "Hot tours API"
-            }
-        
-        # 2. Справочник отелей  
-        try:
-            reference_photo = await photo_service._get_photo_from_hotels_reference(country_code, country_name)
-            results["hotels_reference"] = {
-                "success": bool(reference_photo),
-                "photo_url": reference_photo,
-                "method": "Hotels reference"
-            }
-        except Exception as e:
-            results["hotels_reference"] = {
-                "success": False,
-                "error": str(e),
-                "method": "Hotels reference"
-            }
-        
-        # 3. Поиск туров
-        try:
-            search_photo = await photo_service._get_photo_via_search(country_code, country_name)
-            results["tours_search"] = {
-                "success": bool(search_photo),
-                "photo_url": search_photo,
-                "method": "Tours search"
-            }
-        except Exception as e:
-            results["tours_search"] = {
-                "success": False,
-                "error": str(e),
-                "method": "Tours search"
-            }
-        
-        # 4. Fallback
-        fallback_photo = photo_service.get_fallback_image(country_code, country_name)
-        results["fallback"] = {
-            "success": True,
-            "photo_url": fallback_photo,
-            "method": "Fallback placeholder"
-        }
-        
-        # Определяем лучший результат
-        best_photo = None
-        for method in ["hot_tours", "hotels_reference", "tours_search"]:
-            if results[method]["success"] and results[method].get("photo_url"):
-                best_photo = results[method]["photo_url"]
-                break
-        
-        if not best_photo:
-            best_photo = fallback_photo
-        
-        return {
-            "country_code": country_code,
-            "country_name": country_name,
-            "best_photo": best_photo,
-            "test_results": results,
-            "recommendation": "Use the best_photo URL for this country"
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка при тестировании фото для страны {country_code}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/directions/diagnose")
-async def diagnose_directions_system():
-    """
-    Полная диагностика системы получения направлений
-    """
-    try:
-        logger.info("🔬 Начинаем полную диагностику системы направлений")
-        
-        diagnosis = {
-            "timestamp": datetime.now().isoformat(),
-            "countries": {},
-            "summary": {},
-            "recommendations": []
-        }
-        
-        # Тестируем каждую страну
-        from app.config import settings
-        countries_to_test = settings.POPULAR_COUNTRIES[:3]  # Первые 3 страны
-        
-        for country_code in countries_to_test:
-            country_name = tour_service._get_country_name(country_code)
-            logger.info(f"🔬 Диагностируем {country_name} ({country_code})")
-            
-            country_diagnosis = {
-                "country_code": country_code,
-                "country_name": country_name,
-                "photo_sources": {},
-                "price_search": {},
-                "issues": [],
-                "working_methods": []
-            }
-            
-            # 1. Тестируем горящие туры
-            try:
-                hot_tours_start = datetime.now()
-                hot_tours_data = await tourvisor_client.get_hot_tours(
-                    city=1, items=5, countries=str(country_code)
-                )
-                hot_tours_time = (datetime.now() - hot_tours_start).total_seconds()
-                
-                tours_list = hot_tours_data.get("hottours", [])
-                if not isinstance(tours_list, list):
-                    tours_list = [tours_list] if tours_list else []
-                
-                photos_found = 0
-                for tour in tours_list:
-                    if tour.get("hotelpicture") and not photo_service.is_placeholder_image(tour.get("hotelpicture")):
-                        photos_found += 1
-                
-                country_diagnosis["photo_sources"]["hot_tours"] = {
-                    "success": True,
-                    "response_time": hot_tours_time,
-                    "tours_found": len(tours_list),
-                    "photos_found": photos_found,
-                    "working": photos_found > 0
-                }
-                
-                if photos_found > 0:
-                    country_diagnosis["working_methods"].append("hot_tours")
-                else:
-                    country_diagnosis["issues"].append("No photos in hot tours")
-                    
-            except Exception as e:
-                country_diagnosis["photo_sources"]["hot_tours"] = {
-                    "success": False,
-                    "error": str(e),
-                    "working": False
-                }
-                country_diagnosis["issues"].append(f"Hot tours error: {str(e)}")
-            
-            # 2. Тестируем цены
-            try:
-                price_start = datetime.now()
-                min_price = await price_service.get_country_min_price(country_code, country_name)
-                price_time = (datetime.now() - price_start).total_seconds()
-                
-                country_diagnosis["price_search"] = {
-                    "success": True,
-                    "response_time": price_time,
-                    "min_price": min_price,
-                    "working": min_price > 0,
-                    "is_default": min_price in price_service.get_default_prices().values()
-                }
-                
-            except Exception as e:
-                country_diagnosis["price_search"] = {
-                    "success": False,
-                    "error": str(e),
-                    "working": False
-                }
-            
-            diagnosis["countries"][country_code] = country_diagnosis
-            
-            # Небольшая задержка между странами
-            await asyncio.sleep(1)
-        
-        # Анализируем результаты
-        total_countries = len(diagnosis["countries"])
-        working_countries = 0
-        photo_issues = 0
-        price_issues = 0
-        
-        for country_data in diagnosis["countries"].values():
-            if country_data["working_methods"]:
-                working_countries += 1
-            if not country_data["working_methods"]:
-                photo_issues += 1
-            if not country_data["price_search"].get("working", False):
-                price_issues += 1
-        
-        diagnosis["summary"] = {
-            "total_countries_tested": total_countries,
-            "countries_with_photos": working_countries,
-            "countries_with_photo_issues": photo_issues,
-            "countries_with_price_issues": price_issues,
-            "success_rate": f"{(working_countries/total_countries)*100:.1f}%" if total_countries > 0 else "0%"
-        }
-        
-        # Рекомендации
-        if photo_issues > 0:
-            diagnosis["recommendations"].append("Проблемы с получением фото отелей - проверьте доступность API TourVisor")
-        if price_issues > 0:
-            diagnosis["recommendations"].append("Проблемы с получением цен - возможно, нет туров на указанные даты")
-        if working_countries == total_countries:
-            diagnosis["recommendations"].append("Система работает корректно!")
-        
-        logger.info(f"🔬 Диагностика завершена: {diagnosis['summary']['success_rate']} успеха")
-        return diagnosis
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка при диагностике: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========== АКТУАЛИЗАЦИЯ ТУРОВ ==========
@@ -456,6 +345,45 @@ async def search_tours_by_hotel(
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========== ТЕСТИРОВАНИЕ И СТАТУС ==========
+
+@router.get("/test-random-search")
+async def test_random_search():
+    """
+    Тестирование генерации одного случайного тура для диагностики
+    """
+    try:
+        logger.info("🧪 Тестирование генерации случайного тура")
+        
+        # Генерируем один тур для тестирования
+        request = RandomTourRequest(count=1)
+        result = await random_tours_service._generate_fully_random_tours(request)
+        
+        if result:
+            tour = result[0]
+            return {
+                "success": True,
+                "message": "Генерация случайного тура работает",
+                "test_tour": {
+                    "hotel_name": tour.hotelname,
+                    "country": tour.countryname,
+                    "departure_city": tour.departurename,
+                    "nights": tour.nights,
+                    "price": tour.price,
+                    "stars": tour.hotelstars
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Не удалось сгенерировать тестовый тур"
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка при тестировании: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 @router.get("/test-connection")
 async def test_tourvisor_connection():
@@ -545,5 +473,5 @@ async def get_system_status():
         return {
             "timestamp": datetime.now().isoformat(),
             "overall_health": "unhealthy",
-            "error": str(e)
+            "error": str(e) 
         }

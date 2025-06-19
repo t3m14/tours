@@ -2,7 +2,6 @@ import asyncio
 import random
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
-from urllib import request
 
 from app.core.tourvisor_client import tourvisor_client
 from app.services.cache_service import cache_service
@@ -31,7 +30,7 @@ class RandomToursService:
         # Сохраняем запрос для использования в стратегиях
         self.current_request = request
         
-        # Проверяем кэш
+        # Проверяем кэш с учетом типов отелей
         try:
             cached_tours = await self._get_cached_tours_with_filters(request)
             if cached_tours and len(cached_tours) >= request.count:
@@ -108,14 +107,29 @@ class RandomToursService:
             all_tours = []
             
             # Пробуем с разными параметрами
-            strategies = [
-                # Стратегия 1: Без фильтров
+            strategies = []
+
+            # Базовые стратегии
+            base_strategies = [
                 {"items": 15},
-                # Стратегия 2: Только хорошие отели
                 {"items": 10, "stars": 4},
-                # Стратегия 3: Популярные страны
-                {"items": 8, "countries": "1,4,22"},  # Египет, Турция, Таиланд
+                {"items": 8, "countries": "1,4,22"},
             ]
+
+            # Для каждой базовой стратегии добавляем варианты с типами отелей
+            for base_strategy in base_strategies:
+                strategies.append(base_strategy)
+                
+                # Если указаны типы отелей, добавляем стратегии с фильтрацией
+                if hasattr(self, 'current_request') and self.current_request and self.current_request.hotel_types:
+                    for hotel_type in self.current_request.hotel_types:
+                        hotel_strategy = base_strategy.copy()
+                        # Добавляем параметр типа отеля согласно документации TourVisor
+                        if hotel_type == "beach":
+                            hotel_strategy["visa"] = 0  # Пляжные туры
+                        elif hotel_type == "deluxe":
+                            hotel_strategy["stars"] = 5  # Люкс отели
+                        strategies.append(hotel_strategy)
             
             for city in self.all_cities[:3]:  # Берем первые 3 города
                 for strategy in strategies:
@@ -179,10 +193,11 @@ class RandomToursService:
             logger.info(f"🔍 Пробуем стратегию поиска для {needed_count} туров")
             
             found_tours = []
-            max_attempts = min(needed_count * 2, 8)  # Ограничиваем количество попыток
+            max_attempts = min(needed_count * 2, 12)  # Увеличиваем до 12 попыток
             
             search_variants = self._create_optimized_search_variants(max_attempts, needed_count)
             
+            # Создаем случайные комбинации
             for i, search_params in enumerate(search_variants):
                 if len(found_tours) >= needed_count:
                     break
@@ -196,12 +211,12 @@ class RandomToursService:
                     # Запускаем поиск
                     request_id = await tourvisor_client.search_tours(search_params)
                     
-                    # Быстрое ожидание результатов (максимум 3 секунды)
-                    tour_found = await self._quick_search_result(request_id, search_params)
+                    # Получаем НЕСКОЛЬКО туров из одного поиска
+                    found_tours_from_search = await self._get_multiple_tours_from_search(request_id, search_params, needed_count - len(found_tours))
                     
-                    if tour_found:
-                        found_tours.append(tour_found)
-                        logger.debug(f"✅ Найден тур: {tour_found.hotelname}")
+                    if found_tours_from_search:
+                        found_tours.extend(found_tours_from_search)
+                        logger.debug(f"✅ Найдено {len(found_tours_from_search)} туров из поиска")
                     
                     # Короткая задержка
                     await asyncio.sleep(0.3)
@@ -244,8 +259,13 @@ class RandomToursService:
             "child": 0
         }
         
-        for i in range(min(max_variants, len(popular_combinations))):
-            country, city = popular_combinations[i]
+        # Создаем больше вариантов для большего разнообразия
+        total_variants = min(max_variants, max(len(popular_combinations), 8))  # Минимум 8 вариантов
+
+        for i in range(total_variants):
+            # Используем циклический выбор если вариантов больше чем комбинаций
+            combination_index = i % len(popular_combinations)
+            country, city = popular_combinations[combination_index]
             
             variant = {
                 "departure": city,
@@ -253,40 +273,42 @@ class RandomToursService:
                 **base_dates,
                 **base_params
             }
-            # Иногда добавляем звездность
-        if i % 2 == 0:
-            variant["stars"] = random.choice([3, 4])
-
-        # Добавляем фильтрацию по типам отелей
-        if hasattr(self, 'current_request') and self.current_request and self.current_request.hotel_types:
-            # Выбираем случайный тип отеля из запрошенных
-            hotel_type = random.choice(self.current_request.hotel_types)
             
-            # Конвертируем в параметры TourVisor API
-            if hotel_type == "active":
-                variant["hoteltypes"] = "active"
-            elif hotel_type == "relax":
-                variant["hoteltypes"] = "relax"  
-            elif hotel_type == "family":
-                variant["hoteltypes"] = "family"
-            elif hotel_type == "health":
-                variant["hoteltypes"] = "health"
-            elif hotel_type == "city":
-                variant["hoteltypes"] = "city"
-            elif hotel_type == "beach":
-                variant["hoteltypes"] = "beach"
-            elif hotel_type == "deluxe":
-                variant["hoteltypes"] = "deluxe"
-                variant["stars"] = 5  # Люкс отели обычно 5*
+            # Иногда добавляем звездность
+            if i % 2 == 0:
+                variant["stars"] = random.choice([3, 4])
 
-        variants.append(variant)
+            # Добавляем фильтрацию по типам отелей
+            if hasattr(self, 'current_request') and self.current_request and self.current_request.hotel_types:
+                # Выбираем случайный тип отеля из запрошенных
+                hotel_type = random.choice(self.current_request.hotel_types)
+                
+                # Конвертируем в параметры TourVisor API
+                if hotel_type == "active":
+                    variant["hoteltypes"] = "active"
+                elif hotel_type == "relax":
+                    variant["hoteltypes"] = "relax"  
+                elif hotel_type == "family":
+                    variant["hoteltypes"] = "family"
+                elif hotel_type == "health":
+                    variant["hoteltypes"] = "health"
+                elif hotel_type == "city":
+                    variant["hoteltypes"] = "city"
+                elif hotel_type == "beach":
+                    variant["hoteltypes"] = "beach"
+                elif hotel_type == "deluxe":
+                    variant["hoteltypes"] = "deluxe"
+                    variant["stars"] = 5  # Люкс отели обычно 5*
+
+            variants.append(variant)
+        
         return variants
     
-    async def _quick_search_result(self, request_id: str, search_params: Dict[str, Any]) -> Optional[HotTourInfo]:
-        """Быстрое получение результата поиска"""
+    async def _get_multiple_tours_from_search(self, request_id: str, search_params: Dict[str, Any], max_tours: int) -> List[HotTourInfo]:
+        """Получение нескольких туров из одного поискового запроса"""
         try:
-            # Быстрое ожидание (максимум 3 секунды)
-            for attempt in range(3):
+            # Ждем результатов поиска (максимум 4 секунды)
+            for attempt in range(4):
                 await asyncio.sleep(1)
                 
                 status_result = await tourvisor_client.get_search_status(request_id)
@@ -300,12 +322,12 @@ class RandomToursService:
                 except (ValueError, TypeError):
                     hotels_found = 0
                 
-                # Прерываем если есть результаты
-                if state == "finished" or (hotels_found > 0 and attempt >= 1):
+                # Прерываем если есть результаты или поиск завершен
+                if state == "finished" or (hotels_found > 0 and attempt >= 2):
                     break
             
-            # Получаем результаты
-            results = await tourvisor_client.get_search_results(request_id, 1, 5)
+            # Получаем результаты (больше отелей)
+            results = await tourvisor_client.get_search_results(request_id, 1, 10)  # Увеличено с 5 до 10
             data = results.get("data", {})
             result_data = data.get("result", {})
             hotel_list = result_data.get("hotel", [])
@@ -314,27 +336,48 @@ class RandomToursService:
                 hotel_list = [hotel_list] if hotel_list else []
             
             if not hotel_list:
-                return None
+                return []
             
-            # Берем первый отель и первый тур
-            hotel = hotel_list[0]
-            tours_data = hotel.get("tours", {}).get("tour", [])
+            # Извлекаем туры из ВСЕХ найденных отелей
+            extracted_tours = []
+            import random
             
-            if not isinstance(tours_data, list):
-                tours_data = [tours_data] if tours_data else []
+            # Перемешиваем отели для разнообразия
+            random.shuffle(hotel_list)
             
-            if not tours_data:
-                return None
+            for hotel in hotel_list:
+                if len(extracted_tours) >= max_tours:
+                    break
+                    
+                tours_data = hotel.get("tours", {}).get("tour", [])
+                
+                if not isinstance(tours_data, list):
+                    tours_data = [tours_data] if tours_data else []
+                
+                if not tours_data:
+                    continue
+                
+                # Берем случайный тур из этого отеля
+                tour_data = random.choice(tours_data)
+                
+                try:
+                    # Конвертируем в HotTourInfo
+                    hot_tour_data = self._convert_search_to_hot_tour(hotel, tour_data, search_params)
+                    tour = HotTourInfo(**hot_tour_data)
+                    extracted_tours.append(tour)
+                    
+                    logger.debug(f"🏨 Извлечен тур: {tour.hotelname} - {tour.price} руб.")
+                    
+                except Exception as e:
+                    logger.debug(f"❌ Ошибка при создании тура: {e}")
+                    continue
             
-            tour_data = tours_data[0]
-            
-            # Конвертируем в HotTourInfo
-            hot_tour_data = self._convert_search_to_hot_tour(hotel, tour_data, search_params)
-            return HotTourInfo(**hot_tour_data)
+            logger.info(f"🔍 Извлечено {len(extracted_tours)} туров из {len(hotel_list)} отелей")
+            return extracted_tours
             
         except Exception as e:
-            logger.debug(f"❌ Ошибка быстрого поиска: {e}")
-            return None
+            logger.debug(f"❌ Ошибка получения множественных туров: {e}")
+            return []
     
     def _convert_search_to_hot_tour(self, hotel_data: Dict, tour_data: Dict, search_params: Dict) -> Dict[str, Any]:
         """Конвертация результата поиска в формат HotTourInfo"""
@@ -427,6 +470,8 @@ class RandomToursService:
                 "priceold": float(final_price + random.randint(5000, 15000)),
                 "currency": "RUB"
             }
+            
+            # Учитываем фильтрацию по типам отелей в mock-данных
             if hasattr(self, 'current_request') and self.current_request and self.current_request.hotel_types:
                 # Если запрошены люкс отели, делаем больше 5* отелей
                 if "deluxe" in self.current_request.hotel_types:
@@ -434,6 +479,7 @@ class RandomToursService:
                 # Если пляжные - добавляем пляжную тематику в название
                 elif "beach" in self.current_request.hotel_types:
                     mock_tour_data["hotelname"] = f"BEACH {destination['name'].upper()} RESORT {region.upper()} {i+1}"
+            
             try:
                 mock_tour = HotTourInfo(**mock_tour_data)
                 mock_tours.append(mock_tour)
@@ -511,6 +557,7 @@ class RandomToursService:
                 "success": False,
                 "error": str(e)
             }
+    
     async def _generate_fully_random_tours(self, request: RandomTourRequest) -> List[HotTourInfo]:
         """Генерация полностью случайных туров без использования кэша"""
         logger.info(f"🎲 ПРИНУДИТЕЛЬНАЯ ГЕНЕРАЦИЯ {request.count} ПОЛНОСТЬЮ СЛУЧАЙНЫХ ТУРОВ")
@@ -555,6 +602,34 @@ class RandomToursService:
             random.shuffle(random_tours)
             final_tours = random_tours[:request.count]
             
+            # Сохраняем в кэш для последующего использования в /random
+            if final_tours:
+                try:
+                    cache_key = f"random_tours_count_{request.count}"
+                    await self.cache.set(
+                        cache_key,
+                        [tour.dict() for tour in final_tours],
+                        ttl=1800  # 30 минут для случайных туров
+                    )
+                    logger.info(f"💾 Сохранено {len(final_tours)} сгенерированных туров в кэш")
+                    
+                    # Также сохраняем по типам отелей если указаны
+                    if request.hotel_types:
+                        for hotel_type in request.hotel_types:
+                            type_cache_key = f"random_tours_type_{hotel_type}_count_{request.count}"
+                            # Фильтруем туры по типу
+                            filtered_tours = [tour for tour in final_tours if self._tour_matches_type(tour, hotel_type)]
+                            if filtered_tours:
+                                await self.cache.set(
+                                    type_cache_key,
+                                    [tour.dict() for tour in filtered_tours],
+                                    ttl=settings.RANDOM_TOURS_CACHE_TTL
+                                )
+                                logger.info(f"💾 Сохранено {len(filtered_tours)} туров типа '{hotel_type}' в кэш")
+                    
+                except Exception as cache_error:
+                    logger.error(f"❌ Ошибка сохранения сгенерированных туров в кэш: {cache_error}")
+
             logger.info(f"🏁 ГЕНЕРАЦИЯ ЗАВЕРШЕНА: {len(final_tours)} полностью случайных туров")
             return final_tours
             
@@ -849,18 +924,23 @@ class RandomToursService:
         except Exception as e:
             logger.error(f"❌ Ошибка при очистке кэша типов отелей: {e}")
             return 0
-
-
-
-
-
-
-
-
-
-
-
-
+    def _tour_matches_type(self, tour: HotTourInfo, hotel_type: str) -> bool:
+        """Проверка соответствия тура типу отеля"""
+        hotel_name = tour.hotelname.lower()
+        hotel_stars = tour.hotelstars
+        
+        if hotel_type == "beach" and ("beach" in hotel_name or "resort" in hotel_name):
+            return True
+        elif hotel_type == "deluxe" and hotel_stars >= 5:
+            return True
+        elif hotel_type == "family" and ("family" in hotel_name or hotel_stars >= 4):
+            return True
+        elif hotel_type == "city" and ("city" in hotel_name or "hotel" in hotel_name):
+            return True
+        elif hotel_type in ["relax", "health", "active"]:
+            return True  # Для этих типов пропускаем без строгой фильтрации
+        
+        return False
 
 # Создаем экземпляр улучшенного сервиса
 random_tours_service = RandomToursService()

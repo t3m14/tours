@@ -165,3 +165,185 @@ class DetailedTourInfo(BaseModel):
     tour: Dict[str, Any]
     flights: List[FlightInfo]
     tourinfo: Optional[TourContent] = None
+
+
+# app/models/tour.py - добавить эти модели
+
+class SpecificTourSearchRequest(BaseModel):
+    """Запрос поиска конкретного тура"""
+    departure: int = Field(..., description="Код города вылета")
+    country: int = Field(..., description="Код страны")
+    
+    # Фильтры отеля
+    hotel_stars: Optional[int] = Field(None, ge=1, le=5, description="Звездность отеля")
+    hotel_name: Optional[str] = Field(None, min_length=3, description="Название отеля")
+    hotel_id: Optional[str] = Field(None, description="ID отеля")
+    region_code: Optional[int] = Field(None, description="Код курорта")
+    
+    # Фильтры тура
+    nights: Optional[int] = Field(None, ge=1, le=30, description="Количество ночей")
+    adults: int = Field(2, ge=1, le=8, description="Количество взрослых")
+    children: int = Field(0, ge=0, le=4, description="Количество детей")
+    meal_type: Optional[int] = Field(None, description="Тип питания (код)")
+    
+    # Фильтры цены
+    max_price: Optional[int] = Field(None, gt=0, description="Максимальная цена")
+    min_price: Optional[int] = Field(None, gt=0, description="Минимальная цена")
+    
+    # Фильтры дат
+    date_from: Optional[str] = Field(None, description="Дата от (дд.мм.гггг)")
+    date_to: Optional[str] = Field(None, description="Дата до (дд.мм.гггг)")
+    
+    # Дополнительные фильтры
+    rating: Optional[float] = Field(None, ge=1.0, le=5.0, description="Минимальный рейтинг отеля")
+    hotel_type: Optional[str] = Field(None, description="Тип отеля: beach,city,family,deluxe,etc")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "departure": 1,
+                "country": 4,
+                "hotel_stars": 4,
+                "meal_type": 2,
+                "nights": 7,
+                "adults": 2,
+                "max_price": 80000
+            }
+        }
+
+class FoundTourInfo(BaseModel):
+    """Информация о найденном туре"""
+    
+    # Информация об отеле
+    hotel_id: Optional[str] = Field(None, description="ID отеля")
+    hotel_name: str = Field(..., description="Название отеля")
+    hotel_stars: int = Field(..., description="Звездность отеля")
+    hotel_rating: Optional[float] = Field(None, description="Рейтинг отеля")
+    hotel_description: Optional[str] = Field(None, description="Описание отеля")
+    hotel_picture: Optional[str] = Field(None, description="Ссылка на фото отеля")
+    hotel_review_link: Optional[str] = Field(None, description="Ссылка на отзывы")
+    country_name: str = Field(..., description="Название страны")
+    region_name: str = Field(..., description="Название курорта")
+    sea_distance: Optional[int] = Field(None, description="Расстояние до моря в метрах")
+    
+    # Информация о туре
+    tour_id: Optional[str] = Field(None, description="ID тура")
+    operator_name: str = Field(..., description="Название туроператора")
+    fly_date: str = Field(..., description="Дата вылета")
+    nights: int = Field(..., description="Количество ночей")
+    price: float = Field(..., description="Цена тура")
+    fuel_charge: Optional[float] = Field(None, description="Топливный сбор")
+    meal: str = Field(..., description="Тип питания")
+    room_type: str = Field(..., description="Тип номера")
+    adults: int = Field(..., description="Количество взрослых")
+    children: int = Field(..., description="Количество детей")
+    currency: str = Field(..., description="Валюта")
+    tour_link: Optional[str] = Field(None, description="Ссылка на тур у оператора")
+    
+    # Дополнительная информация
+    is_regular: bool = Field(False, description="Тур на регулярных рейсах")
+    is_promo: bool = Field(False, description="Промо тур")
+    is_on_request: bool = Field(False, description="Места под запрос")
+    flight_status: Optional[int] = Field(None, description="Статус рейсов")
+    hotel_status: Optional[int] = Field(None, description="Статус отеля")
+    
+    # Метаинформация о поиске
+    search_results_count: Optional[int] = Field(None, description="Количество найденных туров")
+    hotels_found: Optional[int] = Field(None, description="Количество найденных отелей")
+    is_fallback: Optional[bool] = Field(False, description="Результат fallback поиска")
+    fallback_strategy: Optional[int] = Field(None, description="Номер fallback стратегии")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "hotel_id": "123",
+                "hotel_name": "CRYSTAL ADMIRAL RESORT SUITES & SPA",
+                "hotel_stars": 5,
+                "hotel_rating": 4.2,
+                "hotel_description": "Роскошный отель на берегу моря",
+                "hotel_picture": "https://example.com/hotel.jpg",
+                "country_name": "Турция",
+                "region_name": "Сиде",
+                "sea_distance": 50,
+                "tour_id": "16347248245",
+                "operator_name": "Coral Travel",
+                "fly_date": "15.07.2025",
+                "nights": 7,
+                "price": 75000,
+                "fuel_charge": 0,
+                "meal": "Всё включено",
+                "room_type": "Standard Room",
+                "adults": 2,
+                "children": 0,
+                "currency": "RUB",
+                "is_regular": False,
+                "is_promo": False,
+                "is_on_request": False,
+                "search_results_count": 45,
+                "hotels_found": 12
+            }
+        }
+
+class TourSearchError(BaseModel):
+    """Ошибка поиска тура"""
+    error: str = Field(..., description="Тип ошибки")
+    message: str = Field(..., description="Описание ошибки")
+    suggestions: List[str] = Field(default=[], description="Предложения по улучшению поиска")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "error": "Тур не найден",
+                "message": "По заданным критериям туры не найдены",
+                "suggestions": [
+                    "Попробуйте отели 3* или без фильтра по звездности",
+                    "Увеличьте максимальную цену до 90,000 руб.",
+                    "Попробуйте 5-9 ночей вместо точно 7",
+                    "Измените даты поездки на ±7 дней"
+                ]
+            }
+        }
+
+class QuickTourSearchRequest(BaseModel):
+    """Упрощенный запрос поиска тура"""
+    departure: int = Field(..., description="Код города вылета")
+    country: int = Field(..., description="Код страны")
+    hotel_stars: int = Field(..., ge=1, le=5, description="Звездность отеля")
+    meal_type: int = Field(..., description="Тип питания")
+    max_price: Optional[int] = Field(None, gt=0, description="Максимальная цена")
+    nights: int = Field(7, ge=1, le=30, description="Количество ночей")
+    adults: int = Field(2, ge=1, le=8, description="Количество взрослых")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "departure": 1,
+                "country": 4,
+                "hotel_stars": 4,
+                "meal_type": 2,
+                "max_price": 80000,
+                "nights": 7,
+                "adults": 2
+            }
+        }
+
+class HotelSearchRequest(BaseModel):
+    """Запрос поиска тура по отелю"""
+    hotel_name: str = Field(..., min_length=3, description="Название отеля")
+    departure: int = Field(..., description="Код города вылета")
+    country: int = Field(..., description="Код страны")
+    nights: int = Field(7, ge=1, le=30, description="Количество ночей")
+    adults: int = Field(2, ge=1, le=8, description="Количество взрослых")
+    children: int = Field(0, ge=0, le=4, description="Количество детей")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "hotel_name": "hilton",
+                "departure": 1,
+                "country": 4,
+                "nights": 7,
+                "adults": 2,
+                "children": 0
+            }
+        }

@@ -86,6 +86,9 @@ class WebSocketManager:
                 page = message.get("page", self.search_states[request_id]["current_page"])
                 await self._send_page_results(request_id, page)
                 
+            elif action == "close_connection":
+                await self._handle_close_connection(websocket, request_id)
+                
             else:
                 # Неизвестное действие
                 await self._send_error_to_client(websocket, f"Неизвестное действие: {action}")
@@ -121,6 +124,60 @@ class WebSocketManager:
             
         except Exception as e:
             logger.error(f"Ошибка при смене страницы: {e}")
+    
+    async def _handle_close_connection(self, websocket: WebSocket, request_id: str):
+        """Обработка запроса на закрытие соединения от клиента"""
+        try:
+            logger.info(f"Получен запрос на закрытие соединения от клиента для поиска {request_id}")
+            
+            # Отправляем подтверждение перед закрытием
+            await self._send_response_to_client(websocket, "connection_closing", {
+                "message": "Соединение закрывается по запросу клиента",
+                "request_id": request_id
+            })
+            
+            # Даем время доставить сообщение
+            await asyncio.sleep(0.1)
+            
+            # Закрываем конкретное соединение
+            await websocket.close(code=1000, reason="Закрыто по запросу клиента")
+            
+            # Убираем соединение из активных
+            if request_id in self.active_connections:
+                self.active_connections[request_id].discard(websocket)
+                
+                # Если это было последнее соединение для данного поиска
+                if not self.active_connections[request_id]:
+                    logger.info(f"Последнее соединение закрыто для поиска {request_id}, очищаем ресурсы")
+                    
+                    # Удаляем пустой набор соединений
+                    del self.active_connections[request_id]
+                    
+                    # Останавливаем мониторинг
+                    if request_id in self.monitoring_tasks:
+                        self.monitoring_tasks[request_id].cancel()
+                        del self.monitoring_tasks[request_id]
+                        logger.info(f"Мониторинг поиска {request_id} остановлен")
+                    
+                    # Очищаем состояние поиска
+                    if request_id in self.search_states:
+                        del self.search_states[request_id]
+                        logger.info(f"Состояние поиска {request_id} очищено")
+                else:
+                    logger.info(f"Соединение закрыто для поиска {request_id}, остается {len(self.active_connections[request_id])} активных соединений")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при обработке закрытия соединения: {e}")
+    
+    async def _send_response_to_client(self, websocket: WebSocket, response_type: str, data: dict):
+        """Отправка ответа конкретному клиенту"""
+        try:
+            await websocket.send_text(json.dumps({
+                "type": response_type,
+                "data": data
+            }, ensure_ascii=False))
+        except Exception as e:
+            logger.error(f"Ошибка при отправке ответа клиенту: {e}")
     
     async def _handle_per_page_change(self, request_id: str, per_page: int):
         """Обработка изменения количества результатов на странице"""
@@ -553,6 +610,62 @@ class WebSocketManager:
             request_id: len(connections) 
             for request_id, connections in self.active_connections.items()
         }
+    
+    async def close_client_connection(self, request_id: str, websocket: WebSocket):
+        """Публичный метод для закрытия конкретного клиентского соединения"""
+        await self._handle_close_connection(websocket, request_id)
+    
+    async def close_all_clients_for_search(self, request_id: str, reason: str = "Закрыто администратором"):
+        """Закрытие всех клиентских соединений для конкретного поиска"""
+        if request_id not in self.active_connections:
+            logger.info(f"Нет активных соединений для поиска {request_id}")
+            return
+        
+        connections_to_close = list(self.active_connections[request_id])
+        logger.info(f"Закрытие {len(connections_to_close)} соединений для поиска {request_id}")
+        
+        # Уведомляем всех клиентов о предстоящем закрытии
+        await self._broadcast_to_group(request_id, {
+            "type": "connection_closing",
+            "data": {
+                "message": reason,
+                "request_id": request_id
+            }
+        })
+        
+        # Даем время доставить сообщение
+        await asyncio.sleep(0.2)
+        
+        # Закрываем все соединения
+        for websocket in connections_to_close:
+            try:
+                await websocket.close(code=1000, reason=reason)
+            except Exception as e:
+                logger.warning(f"Ошибка при закрытии WebSocket: {e}")
+        
+        # Очищаем ресурсы
+        await self._cleanup_search_resources(request_id)
+    
+    async def _cleanup_search_resources(self, request_id: str):
+        """Очистка всех ресурсов для конкретного поиска"""
+        try:
+            # Удаляем соединения
+            if request_id in self.active_connections:
+                del self.active_connections[request_id]
+            
+            # Останавливаем мониторинг
+            if request_id in self.monitoring_tasks:
+                self.monitoring_tasks[request_id].cancel()
+                del self.monitoring_tasks[request_id]
+            
+            # Очищаем состояние
+            if request_id in self.search_states:
+                del self.search_states[request_id]
+            
+            logger.info(f"Все ресурсы для поиска {request_id} очищены")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при очистке ресурсов для поиска {request_id}: {e}")
     
     def get_search_states_info(self) -> Dict[str, Dict[str, Any]]:
         """Получение информации о состояниях поисков"""

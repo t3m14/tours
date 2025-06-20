@@ -14,6 +14,8 @@ class WebSocketManager:
         self.active_connections: Dict[str, Set[WebSocket]] = {}
         # Хранилище задач мониторинга: request_id -> task
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
+        # Хранилище состояния поиска: request_id -> search_state
+        self.search_states: Dict[str, Dict[str, Any]] = {}
     
     async def connect(self, websocket: WebSocket, request_id: str):
         """Подключение WebSocket клиента"""
@@ -24,6 +26,16 @@ class WebSocketManager:
             self.active_connections[request_id] = set()
         
         self.active_connections[request_id].add(websocket)
+        
+        # Инициализируем состояние поиска
+        if request_id not in self.search_states:
+            self.search_states[request_id] = {
+                "current_page": 1,
+                "per_page": 25,
+                "is_finished": False,
+                "total_hotels": 0,
+                "total_pages": 0
+            }
         
         # Запускаем мониторинг поиска, если еще не запущен
         if request_id not in self.monitoring_tasks:
@@ -36,15 +48,169 @@ class WebSocketManager:
             # Отправляем текущий статус сразу после подключения
             await self._send_current_status(request_id)
             
-            # Ожидаем отключения
+            # Если поиск уже завершен, отправляем текущую страницу
+            if self.search_states[request_id]["is_finished"]:
+                await self._send_page_results(request_id, self.search_states[request_id]["current_page"])
+            
+            # Обрабатываем входящие сообщения
             while True:
-                await websocket.receive_text()
+                message_text = await websocket.receive_text()
+                await self._handle_client_message(websocket, request_id, message_text)
                 
         except WebSocketDisconnect:
             await self._disconnect(websocket, request_id)
         except Exception as e:
             logger.error(f"Ошибка WebSocket соединения: {e}")
             await self._disconnect(websocket, request_id)
+    
+    async def _handle_client_message(self, websocket: WebSocket, request_id: str, message_text: str):
+        """Обработка сообщений от клиента"""
+        try:
+            message = json.loads(message_text)
+            action = message.get("action")
+            
+            logger.info(f"Получено сообщение от клиента для поиска {request_id}: {message}")
+            
+            if action == "change_page":
+                page = message.get("page", 1)
+                await self._handle_page_change(request_id, page)
+                
+            elif action == "change_per_page":
+                per_page = message.get("per_page", 25)
+                await self._handle_per_page_change(request_id, per_page)
+                
+            elif action == "get_status":
+                await self._send_current_status(request_id)
+                
+            elif action == "get_results":
+                page = message.get("page", self.search_states[request_id]["current_page"])
+                await self._send_page_results(request_id, page)
+                
+            else:
+                # Неизвестное действие
+                await self._send_error_to_client(websocket, f"Неизвестное действие: {action}")
+                
+        except json.JSONDecodeError:
+            logger.warning(f"Некорректный JSON от клиента: {message_text}")
+            await self._send_error_to_client(websocket, "Некорректный формат сообщения")
+        except Exception as e:
+            logger.error(f"Ошибка при обработке сообщения клиента: {e}")
+            await self._send_error_to_client(websocket, f"Ошибка обработки: {str(e)}")
+    
+    async def _handle_page_change(self, request_id: str, page: int):
+        """Обработка смены страницы"""
+        try:
+            search_state = self.search_states.get(request_id, {})
+            
+            # Валидация страницы
+            if page < 1:
+                page = 1
+            
+            # Если поиск завершен, проверяем максимальную страницу
+            if search_state.get("is_finished") and search_state.get("total_pages"):
+                if page > search_state["total_pages"]:
+                    page = search_state["total_pages"]
+            
+            # Обновляем текущую страницу
+            self.search_states[request_id]["current_page"] = page
+            
+            logger.info(f"Смена страницы для поиска {request_id}: страница {page}")
+            
+            # Отправляем результаты для новой страницы
+            await self._send_page_results(request_id, page)
+            
+        except Exception as e:
+            logger.error(f"Ошибка при смене страницы: {e}")
+    
+    async def _handle_per_page_change(self, request_id: str, per_page: int):
+        """Обработка изменения количества результатов на странице"""
+        try:
+            # Валидация per_page
+            if per_page < 1:
+                per_page = 25
+            elif per_page > 100:
+                per_page = 100
+            
+            self.search_states[request_id]["per_page"] = per_page
+            
+            # Пересчитываем общее количество страниц
+            if self.search_states[request_id].get("total_hotels"):
+                total_hotels = self.search_states[request_id]["total_hotels"]
+                total_pages = (total_hotels + per_page - 1) // per_page
+                self.search_states[request_id]["total_pages"] = total_pages
+                
+                # Проверяем текущую страницу
+                current_page = self.search_states[request_id]["current_page"]
+                if current_page > total_pages:
+                    self.search_states[request_id]["current_page"] = total_pages
+            
+            logger.info(f"Изменение per_page для поиска {request_id}: {per_page} результатов на странице")
+            
+            # Отправляем обновленные результаты
+            await self._send_page_results(request_id, self.search_states[request_id]["current_page"])
+            
+        except Exception as e:
+            logger.error(f"Ошибка при изменении per_page: {e}")
+    
+    async def _send_page_results(self, request_id: str, page: int):
+        """Отправка результатов конкретной страницы"""
+        try:
+            search_state = self.search_states.get(request_id, {})
+            per_page = search_state.get("per_page", 25)
+            
+            logger.info(f"Отправка результатов страницы {page} для поиска {request_id} (по {per_page} на странице)")
+            
+            # Получаем результаты для конкретной страницы
+            results = await self._get_search_results_safe(request_id, page, per_page)
+            
+            # Обновляем состояние поиска
+            if results["status"]["state"] == "finished":
+                total_hotels = results["status"]["hotelsfound"]
+                total_pages = (total_hotels + per_page - 1) // per_page if total_hotels > 0 else 0
+                
+                self.search_states[request_id].update({
+                    "is_finished": True,
+                    "total_hotels": total_hotels,
+                    "total_pages": total_pages
+                })
+            
+            # Добавляем информацию о пагинации
+            pagination_info = {
+                "current_page": page,
+                "per_page": per_page,
+                "total_hotels": search_state.get("total_hotels", results["status"]["hotelsfound"]),
+                "total_pages": search_state.get("total_pages", 0),
+                "has_next_page": page < search_state.get("total_pages", 0),
+                "has_prev_page": page > 1,
+                "hotels_on_page": len(results["hotels"])
+            }
+            
+            # Отправляем результаты с информацией о пагинации
+            await self._broadcast_to_group(request_id, {
+                "type": "page_results",
+                "data": {
+                    "status": results["status"],
+                    "hotels": results["hotels"],
+                    "pagination": pagination_info
+                }
+            })
+            
+            logger.info(f"Отправлено {len(results['hotels'])} отелей на странице {page}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при отправке результатов страницы: {e}")
+    
+    async def _send_error_to_client(self, websocket: WebSocket, error_message: str):
+        """Отправка сообщения об ошибке конкретному клиенту"""
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "data": {
+                    "message": error_message
+                }
+            }, ensure_ascii=False))
+        except Exception as e:
+            logger.error(f"Ошибка при отправке ошибки клиенту: {e}")
     
     async def _disconnect(self, websocket: WebSocket, request_id: str):
         """Отключение WebSocket клиента"""
@@ -59,6 +225,10 @@ class WebSocketManager:
                     self.monitoring_tasks[request_id].cancel()
                     del self.monitoring_tasks[request_id]
                 
+                # Очищаем состояние поиска
+                if request_id in self.search_states:
+                    del self.search_states[request_id]
+                
                 logger.info(f"Остановлен мониторинг для поиска {request_id}")
         
         logger.info(f"WebSocket отключен для поиска {request_id}")
@@ -67,9 +237,20 @@ class WebSocketManager:
         """Отправка текущего статуса поиска"""
         try:
             status = await tour_service.get_search_status(request_id)
+            search_state = self.search_states.get(request_id, {})
+            
+            # Добавляем информацию о пагинации к статусу
+            status_data = status.model_dump()
+            status_data["pagination"] = {
+                "current_page": search_state.get("current_page", 1),
+                "per_page": search_state.get("per_page", 25),
+                "total_pages": search_state.get("total_pages", 0),
+                "is_finished": search_state.get("is_finished", False)
+            }
+            
             await self._broadcast_to_group(request_id, {
                 "type": "status",
-                "data": status.model_dump()
+                "data": status_data
             })
         except Exception as e:
             logger.error(f"Ошибка при отправке статуса: {e}")
@@ -158,12 +339,12 @@ class WebSocketManager:
             "seadistance": self._clean_int_field(hotel_data.get("seadistance")) or None,
         }
     
-    async def _get_search_results_safe(self, request_id: str) -> Dict[str, Any]:
-        """Безопасное получение результатов поиска с очисткой данных"""
+    async def _get_search_results_safe(self, request_id: str, page: int = 1, per_page: int = 25) -> Dict[str, Any]:
+        """Безопасное получение результатов поиска с очисткой данных и пагинацией"""
         try:
             # Получаем сырые данные напрямую от TourVisor клиента
             from app.core.tourvisor_client import tourvisor_client
-            raw_results = await tourvisor_client.get_search_results(request_id, 1, 25)
+            raw_results = await tourvisor_client.get_search_results(request_id, page, per_page)
             
             data = raw_results.get("data", {})
             
@@ -252,30 +433,20 @@ class WebSocketManager:
                     status = await tour_service.get_search_status(request_id)
                     
                     # Отправляем статус всем подключенным клиентам
-                    await self._broadcast_to_group(request_id, {
-                        "type": "status",
-                        "data": status.model_dump()
-                    })
+                    await self._send_current_status(request_id)
                     
-                    # Если поиск завершен, отправляем результаты
+                    # Если поиск завершен, отправляем первую страницу результатов
                     if status.state == "finished":
                         logger.info(f"Поиск {request_id} завершен, получаем результаты...")
                         
+                        # Отмечаем поиск как завершенный
+                        self.search_states[request_id]["is_finished"] = True
+                        
                         try:
-                            # Используем безопасный метод получения результатов
-                            results = await self._get_search_results_safe(request_id)
+                            # Отправляем первую страницу результатов
+                            await self._send_page_results(request_id, 1)
                             
-                            hotels_count = len(results["hotels"])
-                            logger.info(f"Получено результатов для {request_id}: {hotels_count} отелей")
-                            
-                            # Отправляем результаты
-                            await self._broadcast_to_group(request_id, {
-                                "type": "results", 
-                                "data": results
-                            })
-                            
-                            # Даем время доставить сообщение
-                            await asyncio.sleep(1)
+                            logger.info(f"Первая страница результатов отправлена для поиска {request_id}")
                             
                         except Exception as results_error:
                             logger.error(f"Ошибка при получении результатов для {request_id}: {results_error}")
@@ -289,8 +460,6 @@ class WebSocketManager:
                                 }
                             })
                         
-                        # Закрываем все соединения для этого поиска
-                        await self._close_all_connections(request_id, close_code=1000, reason="Поиск завершен")
                         search_finished = True
                         break
                     
@@ -354,6 +523,10 @@ class WebSocketManager:
             self.monitoring_tasks[request_id].cancel()
             del self.monitoring_tasks[request_id]
         
+        # Очищаем состояние поиска
+        if request_id in self.search_states:
+            del self.search_states[request_id]
+        
         logger.info(f"Все WebSocket соединения закрыты для поиска {request_id}")
     
     async def send_search_update(self, request_id: str, update_type: str, data: dict):
@@ -380,6 +553,10 @@ class WebSocketManager:
             request_id: len(connections) 
             for request_id, connections in self.active_connections.items()
         }
+    
+    def get_search_states_info(self) -> Dict[str, Dict[str, Any]]:
+        """Получение информации о состояниях поисков"""
+        return self.search_states.copy()
 
 # Создаем глобальный экземпляр менеджера
 websocket_manager = WebSocketManager()

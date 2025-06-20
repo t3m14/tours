@@ -90,7 +90,7 @@ class WebSocketManager:
                         "data": status.model_dump()
                     })
                     
-                    # Если поиск завершен, отправляем результаты
+                    # Если поиск завершен, отправляем результаты и закрываем соединения
                     if status.state == "finished":
                         results = await tour_service.get_search_results(request_id, 1, 25)
                         
@@ -101,6 +101,9 @@ class WebSocketManager:
                                 "hotels": [hotel.model_dump() for hotel in results.result] if results.result else []
                             }
                         })
+                        
+                        # Закрываем все соединения для этого поиска
+                        await self._close_all_connections(request_id, close_code=1000, reason="Поиск завершен")
                         
                         # Завершаем мониторинг
                         break
@@ -116,6 +119,8 @@ class WebSocketManager:
             logger.info(f"Мониторинг поиска {request_id} отменен")
         except Exception as e:
             logger.error(f"Критическая ошибка в мониторинге {request_id}: {e}")
+            # При критической ошибке закрываем все соединения
+            await self._close_all_connections(request_id, close_code=1011, reason="Ошибка сервера")
         finally:
             # Очистка при завершении
             if request_id in self.monitoring_tasks:
@@ -140,12 +145,55 @@ class WebSocketManager:
         for websocket in disconnected:
             self.active_connections[request_id].discard(websocket)
     
+    async def _close_all_connections(self, request_id: str, close_code: int = 1000, reason: str = "Завершено"):
+        """Закрытие всех WebSocket соединений для поиска"""
+        if request_id not in self.active_connections:
+            return
+        
+        connections_to_close = list(self.active_connections[request_id])
+        
+        for websocket in connections_to_close:
+            try:
+                await websocket.close(code=close_code, reason=reason)
+                logger.debug(f"WebSocket соединение закрыто для поиска {request_id}")
+            except Exception as e:
+                logger.warning(f"Ошибка при закрытии WebSocket: {e}")
+        
+        # Очищаем все соединения для этого поиска
+        if request_id in self.active_connections:
+            del self.active_connections[request_id]
+        
+        # Отменяем задачу мониторинга
+        if request_id in self.monitoring_tasks:
+            self.monitoring_tasks[request_id].cancel()
+            del self.monitoring_tasks[request_id]
+        
+        logger.info(f"Все WebSocket соединения закрыты для поиска {request_id}")
+    
     async def send_search_update(self, request_id: str, update_type: str, data: dict):
         """Публичный метод для отправки обновлений поиска"""
         await self._broadcast_to_group(request_id, {
             "type": update_type,
             "data": data
         })
+    
+    async def force_close_search_connections(self, request_id: str):
+        """Принудительное закрытие всех соединений для поиска (для внешнего использования)"""
+        await self._close_all_connections(request_id, close_code=1000, reason="Принудительное закрытие")
+    
+    def get_active_connections_count(self) -> int:
+        """Получение общего количества активных соединений"""
+        total = 0
+        for connections in self.active_connections.values():
+            total += len(connections)
+        return total
+    
+    def get_search_connections_info(self) -> Dict[str, int]:
+        """Получение информации о соединениях по поискам"""
+        return {
+            request_id: len(connections) 
+            for request_id, connections in self.active_connections.items()
+        }
 
 # Создаем глобальный экземпляр менеджера
 websocket_manager = WebSocketManager()

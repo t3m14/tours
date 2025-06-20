@@ -78,8 +78,9 @@ class WebSocketManager:
         """Мониторинг поиска и отправка обновлений"""
         try:
             logger.info(f"Начат мониторинг поиска {request_id}")
+            search_finished = False
             
-            while request_id in self.active_connections:
+            while request_id in self.active_connections and not search_finished:
                 try:
                     # Получаем статус поиска
                     status = await tour_service.get_search_status(request_id)
@@ -90,22 +91,42 @@ class WebSocketManager:
                         "data": status.model_dump()
                     })
                     
-                    # Если поиск завершен, отправляем результаты и закрываем соединения
+                    # Если поиск завершен, отправляем результаты
                     if status.state == "finished":
-                        results = await tour_service.get_search_results(request_id, 1, 25)
+                        logger.info(f"Поиск {request_id} завершен, получаем результаты...")
                         
-                        await self._broadcast_to_group(request_id, {
-                            "type": "results",
-                            "data": {
-                                "status": results.status.model_dump(),
-                                "hotels": [hotel.model_dump() for hotel in results.result] if results.result else []
-                            }
-                        })
+                        try:
+                            results = await tour_service.get_search_results(request_id, 1, 25)
+                            
+                            logger.info(f"Получено результатов для {request_id}: {len(results.result) if results.result else 0} отелей")
+                            
+                            # Отправляем результаты
+                            await self._broadcast_to_group(request_id, {
+                                "type": "results", 
+                                "data": {
+                                    "status": results.status.model_dump(),
+                                    "hotels": [hotel.model_dump() for hotel in results.result] if results.result else []
+                                }
+                            })
+                            
+                            # Даем время доставить сообщение
+                            await asyncio.sleep(1)
+                            
+                        except Exception as results_error:
+                            logger.error(f"Ошибка при получении результатов для {request_id}: {results_error}")
+                            
+                            # Отправляем сообщение об ошибке
+                            await self._broadcast_to_group(request_id, {
+                                "type": "error",
+                                "data": {
+                                    "message": "Ошибка при получении результатов поиска",
+                                    "error": str(results_error)
+                                }
+                            })
                         
                         # Закрываем все соединения для этого поиска
                         await self._close_all_connections(request_id, close_code=1000, reason="Поиск завершен")
-                        
-                        # Завершаем мониторинг
+                        search_finished = True
                         break
                     
                     # Ждем перед следующей проверкой

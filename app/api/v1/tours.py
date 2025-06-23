@@ -266,7 +266,6 @@ async def get_random_tours_stats():
             "error": str(e),
             "message": "Не удалось получить статистику"
         }
-
 # ========== НАПРАВЛЕНИЯ ==========
 
 @router.get("/directions", response_model=List[DirectionInfo])
@@ -282,6 +281,41 @@ async def get_directions():
         return result
     except Exception as e:
         logger.error(f"❌ Ошибка при получении направлений: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/directions/cities")
+async def get_city_directions(
+    country_id: Optional[int] = Query(None, description="ID страны для фильтрации"),
+    limit_per_country: int = Query(12, ge=1, le=50, description="Максимум городов на страну")
+):
+    """
+    Получение направлений по городам (курортам) с фотографиями отелей
+    
+    Возвращает структуру:
+    - Список стран
+    - В каждой стране до 12 городов/курортов  
+    - Каждый город содержит: city_name, city_id, country_name, country_id, image_link, min_price
+    
+    Параметры:
+    - country_id: фильтрация по конкретной стране (опционально)
+    - limit_per_country: максимум городов на страну (по умолчанию 12)
+    """
+    try:
+        from app.services.city_directions_service import city_directions_service
+        
+        logger.info(f"🏙️ Получение направлений по городам (страна: {country_id}, лимит: {limit_per_country})")
+        
+        result = await city_directions_service.get_all_city_directions(
+            country_id=country_id,
+            limit_per_country=limit_per_country
+        )
+        
+        logger.info(f"✅ Получено {result.total_countries} стран, {result.total_cities} городов")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при получении направлений по городам: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/directions/popular")

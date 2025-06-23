@@ -283,41 +283,190 @@ async def get_directions():
         logger.error(f"❌ Ошибка при получении направлений: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ========== НАПРАВЛЕНИЯ ПО ГОРОДАМ/КУРОРТАМ ==========
+
 @router.get("/directions/cities")
 async def get_city_directions(
-    country_id: Optional[int] = Query(None, description="ID страны для фильтрации"),
-    limit_per_country: int = Query(12, ge=1, le=50, description="Максимум городов на страну")
+    country_code: Optional[int] = Query(None, description="Код страны для фильтрации"),
+    limit: Optional[int] = Query(None, ge=1, le=50, description="Максимальное количество результатов")
 ):
     """
-    Получение направлений по городам (курортам) с фотографиями отелей
+    Получение направлений по городам/курортам
     
-    Возвращает структуру:
-    - Список стран
-    - В каждой стране до 12 городов/курортов  
-    - Каждый город содержит: city_name, city_id, country_name, country_id, image_link, min_price
-    
-    Параметры:
-    - country_id: фильтрация по конкретной стране (опционально)
-    - limit_per_country: максимум городов на страну (по умолчанию 12)
+    Примеры:
+    - /api/v1/tours/directions/cities - все города всех стран
+    - /api/v1/tours/directions/cities?country_code=1 - только города Египта
+    - /api/v1/tours/directions/cities?limit=12 - только первые 12 городов
+    - /api/v1/tours/directions/cities?country_code=4&limit=5 - первые 5 городов Турции
     """
     try:
         from app.services.city_directions_service import city_directions_service
         
-        logger.info(f"🏙️ Получение направлений по городам (страна: {country_id}, лимит: {limit_per_country})")
+        logger.info(f"🏙️ Получение направлений по городам (страна: {country_code}, лимит: {limit})")
         
-        result = await city_directions_service.get_all_city_directions(
-            country_id=country_id,
-            limit_per_country=limit_per_country
-        )
+        result = await city_directions_service.get_city_directions(country_code, limit)
         
-        logger.info(f"✅ Получено {result.total_countries} стран, {result.total_cities} городов")
+        # Группируем результат для удобства
+        countries_data = {}
+        total_cities = 0
         
-        return result
+        for direction in result:
+            country_name = direction["country_name"]
+            if country_name not in countries_data:
+                countries_data[country_name] = {
+                    "country_code": direction["country_code"],
+                    "country_name": country_name,
+                    "cities": []
+                }
+            
+            countries_data[country_name]["cities"].append({
+                "id": direction["id"],
+                "name": direction["name"],
+                "region_code": direction["region_code"],
+                "image_link": direction["image_link"],
+                "min_price": direction["min_price"]
+            })
+            total_cities += 1
+        
+        countries_list = list(countries_data.values())
+        
+        logger.info(f"✅ Получено {len(countries_list)} стран, {total_cities} городов")
+        
+        return {
+            "total_countries": len(countries_list),
+            "total_cities": total_cities,
+            "countries": countries_list
+        }
         
     except Exception as e:
         logger.error(f"❌ Ошибка при получении направлений по городам: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/directions/cities/flat")
+async def get_city_directions_flat(
+    country_code: Optional[int] = Query(None, description="Код страны для фильтрации"),
+    limit: Optional[int] = Query(None, ge=1, le=50, description="Максимальное количество результатов")
+):
+    """
+    Получение направлений по городам в плоском формате (без группировки по странам)
+    """
+    try:
+        from app.services.city_directions_service import city_directions_service
+        
+        logger.info(f"🏙️ Получение направлений по городам (плоский формат)")
+        
+        result = await city_directions_service.get_city_directions(country_code, limit)
+        
+        logger.info(f"✅ Получено {len(result)} городов")
+        
+        return {
+            "total_cities": len(result),
+            "cities": result
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при получении направлений: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/directions/cities/clear-cache")
+async def clear_cities_cache():
+    """
+    Очистка кэша направлений по городам
+    """
+    try:
+        from app.services.city_directions_service import city_directions_service
+        
+        cleared_count = await city_directions_service.clear_cities_cache()
+        
+        return {
+            "success": True,
+            "message": f"Очищено {cleared_count} записей кэша направлений по городам",
+            "cleared_cache_keys": cleared_count
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при очистке кэша: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/directions/cities/status")
+async def get_cities_status():
+    """
+    Статус системы направлений по городам
+    """
+    try:
+        from app.services.city_directions_service import city_directions_service
+        
+        status = await city_directions_service.get_cities_status()
+        return status
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при получении статуса: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ========== ДИАГНОСТИКА НАПРАВЛЕНИЙ ==========
+
+@router.get("/directions/diagnose")
+async def diagnose_directions_system():
+    """
+    Полная диагностика системы направлений
+    """
+    try:
+        # Проверяем все компоненты
+        diagnosis = {
+            "timestamp": datetime.now().isoformat(),
+            "components": {},
+            "recommendations": []
+        }
+        
+        # 1. Проверяем TourVisor API
+        try:
+            countries_test = await tourvisor_client.get_references("country")
+            diagnosis["components"]["tourvisor_api"] = {
+                "status": "healthy" if countries_test else "degraded",
+                "countries_available": len(countries_test.get("country", [])) if countries_test else 0
+            }
+        except Exception as e:
+            diagnosis["components"]["tourvisor_api"] = {
+                "status": "unhealthy",
+                "error": str(e)
+            }
+        
+        # 2. Проверяем кэши
+        try:
+            api_cache = await directions_service.cache.get("api_directions_response")
+            master_cache = await directions_service.cache.get("master_directions_all_countries")
+            
+            diagnosis["components"]["cache_system"] = {
+                "api_cache": {
+                    "exists": bool(api_cache),
+                    "count": len(api_cache) if api_cache else 0
+                },
+                "master_cache": {
+                    "exists": bool(master_cache),
+                    "count": len(master_cache) if master_cache else 0
+                }
+            }
+        except Exception as e:
+            diagnosis["components"]["cache_system"] = {
+                "status": "unhealthy",
+                "error": str(e)
+            }
+        
+        # 3. Генерируем рекомендации
+        if not diagnosis["components"].get("cache_system", {}).get("master_cache", {}).get("exists"):
+            diagnosis["recommendations"].append("🔄 Запустите массовый сбор: POST /api/v1/tours/directions/collect-all")
+        
+        if diagnosis["components"].get("tourvisor_api", {}).get("status") != "healthy":
+            diagnosis["recommendations"].append("⚠️ Проблемы с TourVisor API - проверьте настройки")
+        
+        if not diagnosis["recommendations"]:
+            diagnosis["recommendations"].append("✅ Система направлений работает корректно")
+        
+        return diagnosis
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при диагностике: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 @router.get("/directions/popular")
 async def get_popular_directions(
     limit: int = Query(6, ge=1, le=20, description="Количество популярных направлений")

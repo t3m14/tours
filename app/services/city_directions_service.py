@@ -1,4 +1,5 @@
 # app/services/city_directions_service.py
+
 import asyncio
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -7,14 +8,13 @@ from app.services.cache_service import cache_service
 from app.services.photo_service import photo_service
 from app.services.price_service import price_service
 from app.core.tourvisor_client import tourvisor_client
-from app.models.direction import CityDirectionInfo, CountryDirectionsResponse, DirectionsResponse
-from app.config import settings
+from app.models.tour import DirectionInfo
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 class CityDirectionsService:
-    """Сервис для получения направлений по городам (курортам) с фотографиями"""
+    """Сервис для работы с направлениями по городам/курортам"""
     
     def __init__(self):
         self.cache = cache_service
@@ -23,411 +23,334 @@ class CityDirectionsService:
         
         # Ключи кэша
         self.CITIES_CACHE_KEY = "city_directions_all"
-        self.CACHE_TTL = 86400  # 24 часа
+        self.CACHE_TTL = 7200  # 2 часа
         
-    async def get_all_city_directions(
-        self, 
-        country_id: Optional[int] = None,
-        limit_per_country: int = 12
-    ) -> DirectionsResponse:
+    async def get_city_directions(self, country_code: Optional[int] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
-        Получение всех направлений по городам с фильтрацией по стране
+        Получение направлений по городам/курортам
         
         Args:
-            country_id: ID страны для фильтрации (опционально)
-            limit_per_country: Максимум городов на страну
+            country_code: Код страны для фильтрации (None = все страны)
+            limit: Максимальное количество результатов
         """
+        logger.info(f"🌍 Получение направлений по городам (страна: {country_code}, лимит: {limit})")
+        
         try:
-            logger.info(f"🌍 Получение направлений по городам (страна: {country_id}, лимит: {limit_per_country})")
+            # Формируем ключ кэша
+            cache_key = f"{self.CITIES_CACHE_KEY}_{country_code or 'all'}_{limit or 'all'}"
             
             # Проверяем кэш
-            cache_key = f"{self.CITIES_CACHE_KEY}_limit_{limit_per_country}"
             cached_data = await self.cache.get(cache_key)
-            
             if cached_data:
-                logger.info("📦 Данные получены из кэша")
-                all_countries = [CountryDirectionsResponse(**country_data) for country_data in cached_data]
-                
-                # Применяем фильтрацию по стране если нужно
-                if country_id:
-                    filtered_countries = [c for c in all_countries if c.country_id == country_id]
-                    total_cities = sum(len(c.cities) for c in filtered_countries)
-                    
-                    return DirectionsResponse(
-                        countries=filtered_countries,
-                        total_countries=len(filtered_countries),
-                        total_cities=total_cities
-                    )
-                
-                total_cities = sum(len(c.cities) for c in all_countries)
-                return DirectionsResponse(
-                    countries=all_countries,
-                    total_countries=len(all_countries),
-                    total_cities=total_cities
-                )
+                logger.info(f"📦 Возвращено {len(cached_data)} направлений из кэша")
+                return cached_data
             
             # Генерируем новые данные
             logger.info("🔄 Генерируем новые данные направлений")
-            all_countries = await self._generate_city_directions(limit_per_country)
+            directions = await self._generate_city_directions(country_code, limit)
             
             # Сохраняем в кэш
-            if all_countries:
-                await self.cache.set(
-                    cache_key,
-                    [country.model_dump() for country in all_countries],
-                    ttl=self.CACHE_TTL
-                )
-                logger.info(f"💾 Сохранено {len(all_countries)} стран в кэш")
+            if directions:
+                await self.cache.set(cache_key, directions, ttl=self.CACHE_TTL)
+                logger.info(f"💾 Сохранено {len(directions)} направлений в кэш")
             
-            # Применяем фильтрацию если нужно
-            if country_id:
-                filtered_countries = [c for c in all_countries if c.country_id == country_id]
-                total_cities = sum(len(c.cities) for c in filtered_countries)
-                
-                return DirectionsResponse(
-                    countries=filtered_countries,
-                    total_countries=len(filtered_countries),
-                    total_cities=total_cities
-                )
-            
-            total_cities = sum(len(c.cities) for c in all_countries)
-            return DirectionsResponse(
-                countries=all_countries,
-                total_countries=len(all_countries),
-                total_cities=total_cities
-            )
+            return directions
             
         except Exception as e:
             logger.error(f"❌ Ошибка при получении направлений по городам: {e}")
-            raise
+            return await self._get_fallback_city_directions(country_code, limit)
     
-    async def _generate_city_directions(self, limit_per_country: int) -> List[CountryDirectionsResponse]:
-        """Генерация направлений по городам для всех стран"""
+    async def _generate_city_directions(self, country_code: Optional[int] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Генерация направлений по городам"""
+        logger.info("🏗️ Начинаем генерацию направлений по городам")
+        
         try:
-            logger.info("🏗️ Начинаем генерацию направлений по городам")
-            
-            # Получаем список всех стран
-            countries_data = await tourvisor_client.get_references("country")
-            countries_list = countries_data.get("country", [])
-            
-            if not isinstance(countries_list, list):
-                countries_list = [countries_list] if countries_list else []
-            
-            # Фильтруем валидные страны
-            valid_countries = []
-            for country in countries_list:
-                country_id = country.get("id")
-                country_name = country.get("name")
+            # Получаем список стран
+            if country_code:
+                countries_to_process = [{"id": country_code, "name": self._get_country_name(country_code)}]
+            else:
+                countries_data = await tourvisor_client.get_references("country")
+                countries_list = countries_data.get("country", [])
                 
-                if country_id and country_name:
-                    try:
-                        valid_countries.append({
-                            "id": int(country_id),
-                            "name": country_name
-                        })
-                    except (ValueError, TypeError):
-                        continue
+                if not isinstance(countries_list, list):
+                    countries_list = [countries_list] if countries_list else []
+                
+                # Фильтруем и валидируем страны
+                countries_to_process = []
+                for country in countries_list:
+                    country_id = country.get("id")
+                    country_name = country.get("name")
+                    
+                    if country_id and country_name:
+                        try:
+                            countries_to_process.append({
+                                "id": int(country_id),
+                                "name": country_name
+                            })
+                        except (ValueError, TypeError):
+                            continue
+                
+                # Сортируем по популярности
+                popular_countries = [1, 4, 22, 8, 15, 35]  # Египет, Турция, Таиланд и т.д.
+                countries_to_process.sort(key=lambda x: 0 if x["id"] in popular_countries else 1)
+                
+                # Ограничиваем количество стран если не указана конкретная
+                if limit:
+                    max_countries = min(limit // 3, 10)  # Примерно 3 города на страну
+                    countries_to_process = countries_to_process[:max_countries]
             
-            logger.info(f"🌍 Найдено {len(valid_countries)} валидных стран")
+            logger.info(f"🌍 Найдено {len(countries_to_process)} валидных стран")
             
-            # Приоритизируем популярные страны
-            popular_countries = [1, 4, 22, 8, 15, 35, 9, 11]
+            all_directions = []
             
-            def country_priority(country):
-                return 0 if country["id"] in popular_countries else 1
-            
-            valid_countries.sort(key=country_priority)
-            
-            # Генерируем данные по странам
-            all_countries = []
-            
-            for i, country in enumerate(valid_countries):
+            # Обрабатываем каждую страну
+            for country in countries_to_process:
                 try:
-                    logger.info(f"🏙️ [{i+1}/{len(valid_countries)}] Обрабатываем {country['name']}")
+                    country_directions = await self._get_cities_for_country(country["id"], country["name"])
+                    all_directions.extend(country_directions)
                     
-                    country_directions = await self._generate_country_cities(
-                        country["id"], 
-                        country["name"], 
-                        limit_per_country
-                    )
-                    
-                    if country_directions and country_directions.cities:
-                        all_countries.append(country_directions)
-                        logger.info(f"✅ {country['name']}: {len(country_directions.cities)} городов")
-                    else:
-                        logger.warning(f"⚠️ {country['name']}: нет городов")
+                    # Ограничиваем общее количество
+                    if limit and len(all_directions) >= limit:
+                        all_directions = all_directions[:limit]
+                        break
                     
                     # Задержка между странами
                     await asyncio.sleep(0.5)
                     
                 except Exception as e:
-                    logger.error(f"❌ Ошибка при обработке {country['name']}: {e}")
+                    logger.error(f"❌ Ошибка при обработке страны {country['name']}: {e}")
                     continue
             
-            logger.info(f"🏁 Генерация завершена: {len(all_countries)} стран")
-            return all_countries
+            logger.info(f"🏁 Генерация завершена: {len(all_directions)} направлений")
+            return all_directions
             
         except Exception as e:
-            logger.error(f"❌ Ошибка генерации направлений: {e}")
+            logger.error(f"❌ Ошибка при генерации направлений: {e}")
             return []
     
-    async def _generate_country_cities(
-        self, 
-        country_id: int, 
-        country_name: str, 
-        limit: int
-    ) -> Optional[CountryDirectionsResponse]:
-        """Генерация городов для одной страны"""
+    async def _get_cities_for_country(self, country_id: int, country_name: str) -> List[Dict[str, Any]]:
+        """Получение городов/курортов для конкретной страны"""
         try:
-            # Получаем курорты для страны
-            regions_data = await tourvisor_client.get_references(
-                "region",
-                regcountry=country_id
-            )
+            logger.debug(f"🏙️ Получение городов для {country_name}")
             
+            # Получаем курорты страны
+            regions_data = await tourvisor_client.get_references("region", regcountry=country_id)
             regions_list = regions_data.get("region", [])
+            
             if not isinstance(regions_list, list):
                 regions_list = [regions_list] if regions_list else []
             
             if not regions_list:
-                logger.debug(f"🏙️ Нет курортов для {country_name}")
-                return None
+                logger.debug(f"⚠️ Нет курортов для {country_name}")
+                return []
             
-            logger.info(f"🏙️ {country_name}: найдено {len(regions_list)} курортов")
+            city_directions = []
             
-            # Генерируем данные для курортов
-            cities = []
+            # Ограничиваем количество курортов на страну
+            max_regions = min(len(regions_list), 5)
+            selected_regions = regions_list[:max_regions]
             
-            # Ограничиваем количество курортов
-            limited_regions = regions_list[:limit]
-            
-            # Обрабатываем курорты параллельно (группами по 3)
-            for i in range(0, len(limited_regions), 3):
-                batch = limited_regions[i:i+3]
-                tasks = []
-                
-                for region in batch:
+            for region in selected_regions:
+                try:
                     region_id = region.get("id")
                     region_name = region.get("name")
                     
-                    if region_id and region_name:
-                        try:
-                            region_id = int(region_id)
-                            task = self._generate_city_info(
-                                region_id, 
-                                region_name, 
-                                country_id, 
-                                country_name
-                            )
-                            tasks.append(task)
-                        except (ValueError, TypeError):
-                            continue
-                
-                # Выполняем батч параллельно
-                if tasks:
-                    batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-                    
-                    for result in batch_results:
-                        if isinstance(result, CityDirectionInfo):
-                            cities.append(result)
-                        elif isinstance(result, Exception):
-                            logger.debug(f"Ошибка в батче: {result}")
-                
-                # Задержка между батчами
-                await asyncio.sleep(0.2)
-            
-            if cities:
-                return CountryDirectionsResponse(
-                    country_name=country_name,
-                    country_id=country_id,
-                    cities=cities,
-                    total_cities=len(cities)
-                )
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка генерации городов для {country_name}: {e}")
-            return None
-    
-    async def _generate_city_info(
-        self, 
-        city_id: int, 
-        city_name: str, 
-        country_id: int, 
-        country_name: str
-    ) -> Optional[CityDirectionInfo]:
-        """Генерация информации для одного города"""
-        try:
-            # Получаем фото и цену параллельно с таймаутом
-            try:
-                photo_task = self._get_city_photo_optimized(city_id, city_name, country_id, country_name)
-                price_task = self._get_city_price_optimized(city_id, country_id, country_name)
-                
-                photo, price = await asyncio.wait_for(
-                    asyncio.gather(photo_task, price_task, return_exceptions=True),
-                    timeout=8.0  # 8 секунд максимум на город
-                )
-            except asyncio.TimeoutError:
-                logger.debug(f"⏰ Таймаут для {city_name}")
-                photo = None
-                price = 50000.0
-            
-            # Обрабатываем результаты
-            if isinstance(photo, Exception):
-                logger.debug(f"❌ Ошибка получения фото для {city_name}: {photo}")
-                photo = None
-            
-            if isinstance(price, Exception):
-                logger.debug(f"❌ Ошибка получения цены для {city_name}: {price}")
-                price = self.price_service.get_default_prices().get(country_id, 50000.0)
-            
-            # Fallback для фото
-            if not photo:
-                photo = self.photo_service.get_fallback_image(country_id, f"{city_name}, {country_name}")
-            
-            return CityDirectionInfo(
-                city_name=city_name,
-                city_id=city_id,
-                country_name=country_name,
-                country_id=country_id,
-                image_link=photo,
-                min_price=float(price)
-            )
-            
-        except Exception as e:
-            logger.debug(f"❌ Ошибка генерации для {city_name}: {e}")
-            return None
-    
-    async def _get_city_photo_optimized(
-        self, 
-        city_id: int, 
-        city_name: str, 
-        country_id: int, 
-        country_name: str
-    ) -> Optional[str]:
-        """Оптимизированное получение фото для города"""
-        try:
-            # 1. Сначала пробуем горящие туры для этого курорта
-            for city_departure in [1, 2, 3]:  # Москва, Пермь, Екатеринбург
-                try:
-                    hot_tours_data = await tourvisor_client.get_hot_tours(
-                        city=city_departure,
-                        items=5,
-                        countries=str(country_id),
-                        regions=str(city_id)
-                    )
-                    
-                    tours_list = hot_tours_data.get("hottours", [])
-                    if not isinstance(tours_list, list):
-                        tours_list = [tours_list] if tours_list else []
-                    
-                    for tour in tours_list:
-                        photo_url = tour.get("hotelpicture")
-                        if photo_url and photo_url.strip() and not self.photo_service.is_placeholder_image(photo_url):
-                            logger.debug(f"📸 Фото для {city_name} через горящие туры")
-                            return photo_url
-                    
-                    await asyncio.sleep(0.1)
-                    
-                except Exception:
-                    continue
-            
-            # 2. Если не получилось - через отели курорта
-            try:
-                hotels_data = await tourvisor_client.get_references(
-                    "hotel",
-                    hotcountry=country_id,
-                    hotregion=city_id
-                )
-                
-                hotels = hotels_data.get("hotel", [])
-                if not isinstance(hotels, list):
-                    hotels = [hotels] if hotels else []
-                
-                # Берем первые 2 отеля для быстроты
-                for hotel in hotels[:2]:
-                    hotel_code = hotel.get("id")
-                    if not hotel_code:
+                    if not region_id or not region_name:
                         continue
                     
-                    hotel_details = await tourvisor_client.get_hotel_info(str(hotel_code))
+                    logger.debug(f"🏖️ Обрабатываем курорт {region_name}")
                     
-                    photo_fields = ['hotelpicturebig', 'hotelpicturemedium', 'hotelpicturesmall']
-                    for field in photo_fields:
-                        photo_url = hotel_details.get(field)
-                        if photo_url and photo_url.strip() and not self.photo_service.is_placeholder_image(photo_url):
-                            logger.debug(f"📸 Фото для {city_name} через отели")
-                            return photo_url
+                    # Получаем фото и цену параллельно
+                    photo_task = self.photo_service.get_country_hotel_photo_fast(country_id, country_name)
+                    price_task = self.price_service.get_country_min_price(country_id, country_name)
                     
-                    await asyncio.sleep(0.1)
+                    try:
+                        hotel_photo, min_price = await asyncio.wait_for(
+                            asyncio.gather(photo_task, price_task, return_exceptions=True),
+                            timeout=10.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.debug(f"⏰ Таймаут для {region_name}")
+                        hotel_photo = None
+                        min_price = 50000.0
                     
-            except Exception:
-                pass
+                    # Обрабатываем возможные исключения
+                    if isinstance(hotel_photo, Exception):
+                        hotel_photo = None
+                    if isinstance(min_price, Exception):
+                        min_price = self.price_service.get_default_prices().get(country_id, 50000.0)
+                    
+                    # Fallback для фото
+                    if not hotel_photo:
+                        hotel_photo = self.photo_service.get_fallback_image(country_id, region_name)
+                    
+                    direction = {
+                        "id": f"{country_id}_{region_id}",
+                        "name": region_name,
+                        "country_name": country_name,
+                        "country_code": country_id,
+                        "region_code": region_id,
+                        "image_link": hotel_photo,
+                        "min_price": float(min_price),
+                        "type": "region"
+                    }
+                    
+                    city_directions.append(direction)
+                    logger.debug(f"✅ {region_name}: цена {min_price}")
+                    
+                    # Задержка между курортами
+                    await asyncio.sleep(0.2)
+                    
+                except Exception as e:
+                    logger.debug(f"❌ Ошибка при обработке курорта {region.get('name', 'Unknown')}: {e}")
+                    continue
             
-            return None
+            logger.debug(f"🏙️ {country_name}: получено {len(city_directions)} курортов")
+            return city_directions
             
         except Exception as e:
-            logger.debug(f"❌ Ошибка получения фото для {city_name}: {e}")
-            return None
+            logger.error(f"❌ Ошибка при получении городов для {country_name}: {e}")
+            return []
     
-    async def _get_city_price_optimized(
-        self, 
-        city_id: int, 
-        country_id: int, 
-        country_name: str
-    ) -> float:
-        """Оптимизированное получение цены для города"""
-        try:
-            # Быстрый поиск с конкретным курортом
-            from datetime import datetime, timedelta
+    async def _get_fallback_city_directions(self, country_code: Optional[int] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Fallback направления по городам"""
+        logger.info("🎭 Создаем fallback направления по городам")
+        
+        fallback_data = [
+            # Египет
+            {"country_id": 1, "country_name": "Египет", "cities": [
+                {"id": "1_5", "name": "Хургада", "region_code": 5, "price": 45000},
+                {"id": "1_6", "name": "Шарм-эль-Шейх", "region_code": 6, "price": 50000},
+                {"id": "1_25", "name": "Марса Алам", "region_code": 25, "price": 55000}
+            ]},
+            # Турция
+            {"country_id": 4, "country_name": "Турция", "cities": [
+                {"id": "4_8", "name": "Анталья", "region_code": 8, "price": 35000},
+                {"id": "4_9", "name": "Кемер", "region_code": 9, "price": 38000},
+                {"id": "4_10", "name": "Белек", "region_code": 10, "price": 45000},
+                {"id": "4_11", "name": "Сиде", "region_code": 11, "price": 40000}
+            ]},
+            # Таиланд
+            {"country_id": 22, "country_name": "Таиланд", "cities": [
+                {"id": "22_45", "name": "Пхукет", "region_code": 45, "price": 95000},
+                {"id": "22_46", "name": "Паттайя", "region_code": 46, "price": 85000},
+                {"id": "22_47", "name": "Самуи", "region_code": 47, "price": 110000}
+            ]},
+            # Греция
+            {"country_id": 8, "country_name": "Греция", "cities": [
+                {"id": "8_15", "name": "Крит", "region_code": 15, "price": 55000},
+                {"id": "8_16", "name": "Родос", "region_code": 16, "price": 52000},
+                {"id": "8_17", "name": "Халкидики", "region_code": 17, "price": 58000}
+            ]},
+            # ОАЭ
+            {"country_id": 15, "country_name": "ОАЭ", "cities": [
+                {"id": "15_30", "name": "Дубай", "region_code": 30, "price": 75000},
+                {"id": "15_31", "name": "Абу-Даби", "region_code": 31, "price": 80000},
+                {"id": "15_32", "name": "Шарджа", "region_code": 32, "price": 65000}
+            ]}
+        ]
+        
+        all_directions = []
+        
+        for country_data in fallback_data:
+            # Фильтрация по стране если указана
+            if country_code and country_data["country_id"] != country_code:
+                continue
             
-            search_params = {
-                "departure": 1,  # Москва
-                "country": country_id,
-                "regions": str(city_id),
-                "datefrom": (datetime.now() + timedelta(days=14)).strftime("%d.%m.%Y"),
-                "dateto": (datetime.now() + timedelta(days=21)).strftime("%d.%m.%Y"),
-                "nightsfrom": 7,
-                "nightsto": 10,
-                "adults": 2,
-                "child": 0
-            }
-            
-            request_id = await tourvisor_client.search_tours(search_params)
-            
-            # Ждем результатов максимум 3 секунды
-            for attempt in range(3):
-                await asyncio.sleep(1)
-                
-                status_result = await tourvisor_client.get_search_status(request_id)
-                status_data = status_result.get("data", {}).get("status", {})
-                
-                min_price_from_status = status_data.get("minprice")
-                if min_price_from_status and float(min_price_from_status) > 0:
-                    return float(min_price_from_status)
-            
-            # Fallback к дефолтной цене страны
-            return self.price_service.get_default_prices().get(country_id, 50000.0)
-            
-        except Exception as e:
-            logger.debug(f"❌ Ошибка получения цены для города {city_id}: {e}")
-            return self.price_service.get_default_prices().get(country_id, 50000.0)
+            for city in country_data["cities"]:
+                direction = {
+                    "id": city["id"],
+                    "name": city["name"],
+                    "country_name": country_data["country_name"],
+                    "country_code": country_data["country_id"],
+                    "region_code": city["region_code"],
+                    "image_link": self.photo_service.get_fallback_image(
+                        country_data["country_id"], 
+                        city["name"]
+                    ),
+                    "min_price": float(city["price"]),
+                    "type": "region"
+                }
+                all_directions.append(direction)
+        
+        # Применяем лимит
+        if limit:
+            all_directions = all_directions[:limit]
+        
+        logger.info(f"🎭 Создано {len(all_directions)} fallback направлений")
+        return all_directions
     
-    async def clear_cache(self) -> bool:
+    def _get_country_name(self, country_code: int) -> str:
+        """Получение названия страны по коду"""
+        country_map = {
+            1: "Египет", 4: "Турция", 8: "Греция", 9: "Кипр", 11: "Болгария",
+            15: "ОАЭ", 16: "Тунис", 17: "Черногория", 19: "Испания", 20: "Италия",
+            22: "Таиланд", 23: "Индия", 24: "Шри-Ланка", 25: "Вьетнам", 26: "Китай",
+            27: "Индонезия", 28: "Малайзия", 29: "Сингапур", 30: "Филиппины",
+            31: "Маврикий", 32: "Сейшелы", 33: "Танзания", 34: "Кения", 35: "Мальдивы"
+        }
+        return country_map.get(country_code, f"Страна {country_code}")
+    
+    async def clear_cities_cache(self) -> int:
         """Очистка кэша направлений по городам"""
         try:
-            keys_to_clear = await self.cache.get_keys_pattern("city_directions_*")
+            cache_keys = await self.cache.get_keys_pattern("city_directions_*")
             
-            for key in keys_to_clear:
-                await self.cache.delete(key)
+            cleared_count = 0
+            for key in cache_keys:
+                if await self.cache.delete(key):
+                    cleared_count += 1
             
-            logger.info(f"🗑️ Очищено {len(keys_to_clear)} ключей кэша городских направлений")
-            return True
+            logger.info(f"🗑️ Очищено {cleared_count} ключей кэша направлений по городам")
+            return cleared_count
             
         except Exception as e:
-            logger.error(f"❌ Ошибка очистки кэша: {e}")
-            return False
+            logger.error(f"❌ Ошибка при очистке кэша: {e}")
+            return 0
+    
+    async def get_cities_status(self) -> Dict[str, Any]:
+        """Получение статуса системы направлений по городам"""
+        try:
+            cache_keys = await self.cache.get_keys_pattern("city_directions_*")
+            
+            cache_info = {}
+            for key in cache_keys:
+                try:
+                    cached_data = await self.cache.get(key)
+                    if cached_data:
+                        cache_info[key] = {
+                            "count": len(cached_data),
+                            "countries": list(set([item.get("country_name", "Unknown") for item in cached_data])),
+                            "sample_regions": [item.get("name", "Unknown") for item in cached_data[:3]]
+                        }
+                except:
+                    cache_info[key] = {"error": "Cannot read cache"}
+            
+            return {
+                "cache_status": {
+                    "cached_variants": len(cache_keys),
+                    "cache_details": cache_info
+                },
+                "endpoints": {
+                    "get_all_cities": "/api/v1/tours/directions/cities",
+                    "get_cities_by_country": "/api/v1/tours/directions/cities?country_code=1",
+                    "get_limited_cities": "/api/v1/tours/directions/cities?limit=10",
+                    "clear_cache": "/api/v1/tours/directions/cities/clear-cache"
+                },
+                "features": {
+                    "country_filtering": True,
+                    "limit_support": True,
+                    "photo_integration": True,
+                    "price_calculation": True,
+                    "fallback_data": True
+                }
+            }
+            
+        except Exception as e:
+            return {
+                "error": str(e),
+                "recommendation": "Check TourVisor API connection"
+            }
 
 # Создаем экземпляр сервиса
 city_directions_service = CityDirectionsService()

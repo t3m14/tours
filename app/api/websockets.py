@@ -483,6 +483,8 @@ class WebSocketManager:
         try:
             logger.info(f"Начат мониторинг поиска {request_id}")
             search_finished = False
+            last_hotels_count = 0
+            results_sent = False
             
             while request_id in self.active_connections and not search_finished:
                 try:
@@ -492,18 +494,43 @@ class WebSocketManager:
                     # Отправляем статус всем подключенным клиентам
                     await self._send_current_status(request_id)
                     
-                    # Если поиск завершен, отправляем первую страницу результатов
+                    current_hotels_count = status.hotelsfound
+                    
+                    # Проверяем, есть ли новые результаты для отправки
+                    should_send_results = False
+                    
+                    if current_hotels_count > last_hotels_count:
+                        # Есть новые отели
+                        if not results_sent:
+                            # Первая отправка результатов - отправляем если есть хотя бы несколько отелей
+                            if current_hotels_count >= 5:
+                                should_send_results = True
+                                results_sent = True
+                                logger.info(f"Отправляем первые результаты для поиска {request_id}: {current_hotels_count} отелей")
+                        else:
+                            # Проверяем, нужно ли обновить результаты
+                            # Отправляем обновления если количество отелей увеличилось значительно
+                            hotels_diff = current_hotels_count - last_hotels_count
+                            if hotels_diff >= 10 or (hotels_diff >= 5 and current_hotels_count < 25):
+                                should_send_results = True
+                                logger.info(f"Обновляем результаты для поиска {request_id}: +{hotels_diff} отелей (всего {current_hotels_count})")
+                    
+                    # Если поиск завершен и еще не отправляли результаты, отправляем обязательно
                     if status.state == "finished":
-                        logger.info(f"Поиск {request_id} завершен, получаем результаты...")
+                        if not results_sent or current_hotels_count > last_hotels_count:
+                            should_send_results = True
+                            logger.info(f"Поиск {request_id} завершен, отправляем финальные результаты: {current_hotels_count} отелей")
                         
                         # Отмечаем поиск как завершенный
                         self.search_states[request_id]["is_finished"] = True
-                        
+                        search_finished = True
+                    
+                    # Отправляем результаты если нужно
+                    if should_send_results:
                         try:
-                            # Отправляем первую страницу результатов
-                            await self._send_page_results(request_id, 1)
-                            
-                            logger.info(f"Первая страница результатов отправлена для поиска {request_id}")
+                            current_page = self.search_states[request_id]["current_page"]
+                            await self._send_page_results(request_id, current_page)
+                            last_hotels_count = current_hotels_count
                             
                         except Exception as results_error:
                             logger.error(f"Ошибка при получении результатов для {request_id}: {results_error}")
@@ -516,8 +543,8 @@ class WebSocketManager:
                                     "error": str(results_error)
                                 }
                             })
-                        
-                        search_finished = True
+                    
+                    if search_finished:
                         break
                     
                     # Ждем перед следующей проверкой

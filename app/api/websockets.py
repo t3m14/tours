@@ -266,31 +266,33 @@ class WebSocketManager:
                 })
                 return
             
-            # Обновляем состояние поиска
-            if results["status"]["state"] == "finished":
-                total_hotels = results["status"]["hotelsfound"]
-                total_pages = (total_hotels + per_page - 1) // per_page if total_hotels > 0 else 0
-                
-                self.search_states[request_id].update({
-                    "is_finished": True,
-                    "total_hotels": total_hotels,
-                    "total_pages": total_pages
-                })
-            
             # Добавляем информацию о пагинации
             available_hotels_on_page = len(results["hotels"])
+            total_hotels_found = results["status"]["hotelsfound"]  # Актуальное количество из статуса
+            total_pages = (total_hotels_found + per_page - 1) // per_page if total_hotels_found > 0 else 1
+            
             pagination_info = {
                 "current_page": page,
                 "per_page": per_page,
-                "total_hotels": search_state.get("total_hotels", results["status"]["hotelsfound"]),
-                "total_pages": search_state.get("total_pages", 0),
-                "has_next_page": page < search_state.get("total_pages", 0),
+                "total_hotels": total_hotels_found,  # Используем актуальные данные
+                "total_pages": total_pages,          # Пересчитываем заново
+                "has_next_page": page < total_pages,
                 "has_prev_page": page > 1,
                 "hotels_on_page": available_hotels_on_page,
                 "is_partial": not search_state.get("is_finished", False),
                 "search_progress": results["status"]["progress"],
-                "page_ready": True
+                "page_ready": True,
+                "pages_sent": list(search_state.get("pages_sent", set())),
+                "available_pages": list(range(1, total_pages + 1)) if total_pages > 0 else [1]
             }
+            
+            # Обновляем состояние поиска актуальными данными
+            if results["status"]["state"] == "finished":
+                self.search_states[request_id].update({
+                    "is_finished": True,
+                    "total_hotels": total_hotels_found,
+                    "total_pages": total_pages
+                })
             
             # Отправляем результаты с информацией о пагинации
             search_state = self.search_states.get(request_id, {})
@@ -361,19 +363,48 @@ class WebSocketManager:
             status = await tour_service.get_search_status(request_id)
             search_state = self.search_states.get(request_id, {})
             
-            # Добавляем информацию о пагинации к статусу
+            # Получаем актуальные данные о пагинации
+            current_hotels = status.hotelsfound
+            per_page = search_state.get("per_page", 25)
+            current_page = search_state.get("current_page", 1)
+            is_finished = search_state.get("is_finished", False) or status.state == "finished"
+            
+            # Рассчитываем актуальные данные пагинации
+            total_pages = 0
+            has_next_page = False
+            has_prev_page = current_page > 1
+            
+            if current_hotels > 0:
+                total_pages = (current_hotels + per_page - 1) // per_page
+                has_next_page = current_page < total_pages
+            
+            # Обновляем состояние поиска
+            if is_finished:
+                self.search_states[request_id]["is_finished"] = True
+                self.search_states[request_id]["total_hotels"] = current_hotels
+                self.search_states[request_id]["total_pages"] = total_pages
+            
+            # Добавляем полную информацию о пагинации к статусу
             status_data = status.model_dump()
             status_data["pagination"] = {
-                "current_page": search_state.get("current_page", 1),
-                "per_page": search_state.get("per_page", 25),
-                "total_pages": search_state.get("total_pages", 0),
-                "is_finished": search_state.get("is_finished", False)
+                "current_page": current_page,
+                "per_page": per_page,
+                "total_hotels": current_hotels,  # Актуальное количество найденных отелей
+                "total_pages": total_pages,      # Актуальное количество страниц
+                "has_next_page": has_next_page,  # Есть ли следующая страница
+                "has_prev_page": has_prev_page,  # Есть ли предыдущая страница
+                "is_finished": is_finished,      # Завершен ли поиск
+                "pages_sent": list(search_state.get("pages_sent", set())),  # Какие страницы уже отправлены
+                "available_pages": list(range(1, total_pages + 1)) if total_pages > 0 else [1]  # Доступные страницы
             }
             
             await self._broadcast_to_group(request_id, {
                 "type": "status",
                 "data": status_data
             })
+            
+            logger.debug(f"📊 Статус для {request_id}: отелей {current_hotels}, страниц {total_pages}, текущая {current_page}")
+            
         except Exception as e:
             logger.error(f"Ошибка при отправке статуса: {e}")
     

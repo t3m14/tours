@@ -34,7 +34,9 @@ class WebSocketManager:
                 "per_page": 25,
                 "is_finished": False,
                 "total_hotels": 0,
-                "total_pages": 0
+                "total_pages": 0,
+                "pages_sent": set(),  # Множество отправленных страниц
+                "last_hotels_count": 0
             }
         
         # Запускаем мониторинг поиска, если еще не запущен
@@ -121,6 +123,9 @@ class WebSocketManager:
             
             # Отправляем результаты для новой страницы
             await self._send_page_results(request_id, page)
+            
+            # Отмечаем что эта страница была отправлена
+            self.search_states[request_id]["pages_sent"].add(page)
             
         except Exception as e:
             logger.error(f"Ошибка при смене страницы: {e}")
@@ -217,8 +222,49 @@ class WebSocketManager:
             
             logger.info(f"Отправка результатов страницы {page} для поиска {request_id} (по {per_page} на странице)")
             
+            # Проверяем, достаточно ли отелей для запрашиваемой страницы
+            current_status = await tour_service.get_search_status(request_id)
+            total_hotels = current_status.hotelsfound
+            
+            # Вычисляем минимальное количество отелей для данной страницы
+            min_hotels_needed = (page - 1) * per_page + 1
+            
+            # Если недостаточно отелей и поиск еще не завершен
+            if total_hotels < min_hotels_needed and not search_state.get("is_finished", False):
+                logger.info(f"Страница {page} недоступна: нужно минимум {min_hotels_needed} отелей, найдено {total_hotels}")
+                
+                await self._broadcast_to_group(request_id, {
+                    "type": "page_not_ready",
+                    "data": {
+                        "requested_page": page,
+                        "available_hotels": total_hotels,
+                        "needed_hotels": min_hotels_needed,
+                        "search_in_progress": True,
+                        "message": f"Страница {page} пока недоступна. Найдено {total_hotels} отелей, для страницы {page} нужно минимум {min_hotels_needed}. Поиск продолжается...",
+                        "estimated_wait": "Ожидайте обновлений или вернитесь к доступным страницам"
+                    }
+                })
+                return
+            
             # Получаем результаты для конкретной страницы
             results = await self._get_search_results_safe(request_id, page, per_page)
+            
+            # Проверяем, есть ли отели на запрашиваемой странице
+            if not results["hotels"] and page > 1:
+                # Страница пустая, возможно запрошена несуществующая страница
+                max_page = (total_hotels + per_page - 1) // per_page if total_hotels > 0 else 1
+                
+                await self._broadcast_to_group(request_id, {
+                    "type": "page_empty",
+                    "data": {
+                        "requested_page": page,
+                        "max_available_page": max_page,
+                        "total_hotels": total_hotels,
+                        "message": f"Страница {page} не содержит отелей. Максимальная доступная страница: {max_page}",
+                        "suggestion": f"Перейдите на страницу 1-{max_page}"
+                    }
+                })
+                return
             
             # Обновляем состояние поиска
             if results["status"]["state"] == "finished":
@@ -232,6 +278,7 @@ class WebSocketManager:
                 })
             
             # Добавляем информацию о пагинации
+            available_hotels_on_page = len(results["hotels"])
             pagination_info = {
                 "current_page": page,
                 "per_page": per_page,
@@ -239,23 +286,41 @@ class WebSocketManager:
                 "total_pages": search_state.get("total_pages", 0),
                 "has_next_page": page < search_state.get("total_pages", 0),
                 "has_prev_page": page > 1,
-                "hotels_on_page": len(results["hotels"])
+                "hotels_on_page": available_hotels_on_page,
+                "is_partial": not search_state.get("is_finished", False),
+                "search_progress": results["status"]["progress"],
+                "page_ready": True
             }
             
             # Отправляем результаты с информацией о пагинации
+            search_state = self.search_states.get(request_id, {})
+            is_first_time_sent = page not in search_state.get("pages_sent", set())
+            message_type = "partial_results" if pagination_info["is_partial"] else "final_results"
+            
             await self._broadcast_to_group(request_id, {
-                "type": "page_results",
+                "type": message_type,
                 "data": {
                     "status": results["status"],
                     "hotels": results["hotels"],
-                    "pagination": pagination_info
+                    "pagination": pagination_info,
+                    "is_first_time": is_first_time_sent  # Указываем, первый ли раз отправляется эта страница
                 }
             })
             
-            logger.info(f"Отправлено {len(results['hotels'])} отелей на странице {page}")
+            logger.info(f"Отправлено {available_hotels_on_page} отелей на странице {page} ({'промежуточные' if pagination_info['is_partial'] else 'финальные'} результаты, {'первая отправка' if is_first_time_sent else 'повторная отправка'})")
             
         except Exception as e:
             logger.error(f"Ошибка при отправке результатов страницы: {e}")
+            
+            # Отправляем ошибку пользователю
+            await self._broadcast_to_group(request_id, {
+                "type": "page_error",
+                "data": {
+                    "requested_page": page,
+                    "message": f"Ошибка при получении страницы {page}",
+                    "error": str(e)
+                }
+            })
     
     async def _send_error_to_client(self, websocket: WebSocket, error_message: str):
         """Отправка сообщения об ошибке конкретному клиенту"""
@@ -483,8 +548,6 @@ class WebSocketManager:
         try:
             logger.info(f"Начат мониторинг поиска {request_id}")
             search_finished = False
-            last_hotels_count = 0
-            results_sent = False
             
             while request_id in self.active_connections and not search_finished:
                 try:
@@ -495,47 +558,32 @@ class WebSocketManager:
                     await self._send_current_status(request_id)
                     
                     current_hotels_count = status.hotelsfound
+                    search_state = self.search_states[request_id]
+                    per_page = search_state["per_page"]
+                    pages_sent = search_state["pages_sent"]
                     
-                    # Проверяем, есть ли новые результаты для отправки
-                    should_send_results = False
+                    # Проверяем, нужно ли отправить первую страницу
+                    should_send_first_page = False
                     
-                    if current_hotels_count > last_hotels_count:
-                        # Есть новые отели
-                        if not results_sent:
-                            # Первая отправка результатов - отправляем если есть хотя бы несколько отелей
-                            if current_hotels_count >= 5:
-                                should_send_results = True
-                                results_sent = True
-                                logger.info(f"Отправляем первые результаты для поиска {request_id}: {current_hotels_count} отелей")
-                        else:
-                            # Проверяем, нужно ли обновить результаты
-                            # Отправляем обновления если количество отелей увеличилось значительно
-                            hotels_diff = current_hotels_count - last_hotels_count
-                            if hotels_diff >= 10 or (hotels_diff >= 5 and current_hotels_count < 25):
-                                should_send_results = True
-                                logger.info(f"Обновляем результаты для поиска {request_id}: +{hotels_diff} отелей (всего {current_hotels_count})")
+                    if 1 not in pages_sent:  # Первая страница еще не отправлена
+                        # Отправляем первую страницу если есть достаточно отелей
+                        if current_hotels_count >= per_page:
+                            should_send_first_page = True
+                            logger.info(f"Отправляем первую страницу для поиска {request_id}: найдено {current_hotels_count} отелей, отправляем первые {per_page}")
+                        # Или если прошло достаточно времени и есть хотя бы несколько отелей
+                        elif current_hotels_count >= 5 and status.timepassed >= 8:
+                            should_send_first_page = True
+                            logger.info(f"Отправляем первую страницу для поиска {request_id}: найдено {current_hotels_count} отелей после {status.timepassed} секунд")
                     
-                    # Если поиск завершен и еще не отправляли результаты, отправляем обязательно
-                    if status.state == "finished":
-                        if not results_sent or current_hotels_count > last_hotels_count:
-                            should_send_results = True
-                            logger.info(f"Поиск {request_id} завершен, отправляем финальные результаты: {current_hotels_count} отелей")
-                        
-                        # Отмечаем поиск как завершенный
-                        self.search_states[request_id]["is_finished"] = True
-                        search_finished = True
-                    
-                    # Отправляем результаты если нужно
-                    if should_send_results:
+                    # Отправляем первую страницу если нужно
+                    if should_send_first_page:
                         try:
-                            current_page = self.search_states[request_id]["current_page"]
-                            await self._send_page_results(request_id, current_page)
-                            last_hotels_count = current_hotels_count
+                            await self._send_page_results(request_id, 1)
+                            pages_sent.add(1)  # Отмечаем что первая страница отправлена
                             
                         except Exception as results_error:
                             logger.error(f"Ошибка при получении результатов для {request_id}: {results_error}")
                             
-                            # Отправляем сообщение об ошибке
                             await self._broadcast_to_group(request_id, {
                                 "type": "error",
                                 "data": {
@@ -543,6 +591,16 @@ class WebSocketManager:
                                     "error": str(results_error)
                                 }
                             })
+                    
+                    # Проверяем завершение поиска
+                    if status.state == "finished":
+                        logger.info(f"Поиск {request_id} завершен: {current_hotels_count} отелей найдено")
+                        
+                        # Отмечаем поиск как завершенный
+                        self.search_states[request_id]["is_finished"] = True
+                        search_finished = True
+                        
+                        # НЕ отправляем обновления автоматически - только по запросу пользователя
                     
                     if search_finished:
                         break
@@ -552,16 +610,14 @@ class WebSocketManager:
                     
                 except Exception as e:
                     logger.error(f"Ошибка в мониторинге поиска {request_id}: {e}")
-                    await asyncio.sleep(5)  # Больше времени при ошибке
+                    await asyncio.sleep(5)
             
         except asyncio.CancelledError:
             logger.info(f"Мониторинг поиска {request_id} отменен")
         except Exception as e:
             logger.error(f"Критическая ошибка в мониторинге {request_id}: {e}")
-            # При критической ошибке закрываем все соединения
             await self._close_all_connections(request_id, close_code=1011, reason="Ошибка сервера")
         finally:
-            # Очистка при завершении
             if request_id in self.monitoring_tasks:
                 del self.monitoring_tasks[request_id]
     

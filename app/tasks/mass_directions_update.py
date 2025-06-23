@@ -3,7 +3,6 @@
 import asyncio
 from datetime import datetime, timedelta
 
-from app.services.mass_directions_collector import mass_directions_collector
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)

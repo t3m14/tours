@@ -4,7 +4,6 @@ from typing import List, Dict, Any
 
 from app.core.tourvisor_client import tourvisor_client
 from app.services.cache_service import cache_service
-from app.services.directions_service import directions_service
 from app.config import settings
 from app.utils.logger import setup_logger
 from app.services.random_tours_service import random_tours_service

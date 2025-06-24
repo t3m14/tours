@@ -80,7 +80,7 @@ class CityDirectionsService:
             logger.info(f"🔍 Начинаем сбор данных для {len(regions)} регионов страны {country_name}")
             
             # Обрабатываем регионы параллельно, но с ограничением
-            semaphore = asyncio.Semaphore(3)  # Максимум 3 одновременных запроса
+            semaphore = asyncio.Semaphore(2)  # Уменьшено до 2 одновременных запросов
             tasks = []
             
             for region in regions[:limit] if limit else regions:
@@ -140,7 +140,7 @@ class CityDirectionsService:
                 search_request = TourSearchRequest(
                     departure=1,  # Москва по умолчанию
                     country=country_id,
-                    region=region_id,
+                    regions=str(region_id),  # Добавляем параметр региона
                     nights=7,  # 7 ночей по умолчанию
                     adults=2
                 )
@@ -153,13 +153,13 @@ class CityDirectionsService:
                 
                 logger.debug(f"🎯 Получен request_id: {request_id} для региона {region_name}")
                 
-                # Ждем завершения поиска (максимум 30 секунд)
+                # Ждем завершения поиска (увеличиваем время ожидания)
                 search_completed = False
-                for attempt in range(30):
+                for attempt in range(60):  # Увеличено до 60 секунд
                     await asyncio.sleep(1)
                     status = await tour_service.get_search_status(request_id)
                     
-                    logger.debug(f"🔄 Попытка {attempt + 1}/30 для {region_name}: статус = {status.state}")
+                    logger.debug(f"🔄 Попытка {attempt + 1}/60 для {region_name}: статус = {status.state}")
                     
                     if status.state == "finished":
                         search_completed = True
@@ -172,7 +172,16 @@ class CityDirectionsService:
                     logger.warning(f"⏰ Таймаут поиска для региона {region_name}")
                     return None
                 
-                logger.debug(f"✅ Поиск завершен для региона {region_name}, получаем результаты")
+                logger.debug(f"✅ Поиск завершен для региона {region_name}")
+                
+                # Получаем минимальную цену из статуса поиска (намного проще!)
+                min_price = status.minprice
+                
+                if not min_price or min_price <= 0:
+                    logger.debug(f"❌ Нет валидной минимальной цены для региона {region_name}: {min_price}")
+                    return None
+                
+                logger.debug(f"💰 Минимальная цена из статуса для {region_name}: {min_price}")
                 
                 # Получаем результаты с более мягкой валидацией
                 try:
@@ -425,6 +434,38 @@ class CityDirectionsService:
             logger.error(f"❌ Ошибка при получении статуса: {e}")
             return {"error": str(e)}
 
+    def _extract_image_from_raw(self, raw_data: Dict) -> str:
+        """
+        Извлекает только изображение из сырых данных API
+        
+        Returns:
+            str: Ссылка на изображение или placeholder
+        """
+        try:
+            # Ищем отели по пути data -> result -> hotel
+            if "data" in raw_data and isinstance(raw_data["data"], dict):
+                data = raw_data["data"]
+                if "result" in data and isinstance(data["result"], dict):
+                    result = data["result"]
+                    if "hotel" in result and isinstance(result["hotel"], list):
+                        hotels = result["hotel"]
+                        
+                        # Ищем фото в первом доступном отеле
+                        for hotel in hotels:
+                            if isinstance(hotel, dict):
+                                photo_fields = ['picturelink', 'hotelpicture', 'picture', 'image']
+                                for field in photo_fields:
+                                    photo_url = hotel.get(field)
+                                    if photo_url and isinstance(photo_url, str) and photo_url.startswith('http'):
+                                        logger.debug(f"📸 Найдено фото в сырых данных: {photo_url}")
+                                        return photo_url
+            
+            return "https://via.placeholder.com/300x200?text=No+Image"
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка извлечения фото из сырых данных: {e}")
+            return "https://via.placeholder.com/300x200?text=No+Image"
+
     def get_country_id_by_name(self, country_name: str) -> Optional[int]:
         """Получение ID страны по названию из бара сайта"""
         return self.COUNTRIES_MAPPING.get(country_name)
@@ -444,44 +485,152 @@ class CityDirectionsService:
             tuple: (min_price, image_link) или None если данных нет
         """
         try:
-            hotels = raw_data.get("result", [])
+            # Проверяем разные возможные структуры ответа
+            hotels = None
+            
+            # Список возможных путей к данным отелей
+            possible_paths = [
+                # Правильный путь согласно анализу структуры
+                ["data", "result", "hotel"],
+                # Альтернативные пути для совместимости
+                ["result"],
+                ["data", "result"], 
+                ["data", "hotels"],
+                ["data", "data", "result"],
+                ["data"],
+                ["hotels"],
+                ["items"],
+                ["results"]
+            ]
+            
+            logger.debug(f"🔍 Анализируем структуру данных: {list(raw_data.keys())}")
+            
+            for path in possible_paths:
+                try:
+                    current_obj = raw_data
+                    path_str = " -> ".join(path)
+                    
+                    for key in path:
+                        if isinstance(current_obj, dict) and key in current_obj:
+                            current_obj = current_obj[key]
+                        else:
+                            break
+                    else:
+                        # Дошли до конца пути успешно
+                        if isinstance(current_obj, list) and current_obj:
+                            # Проверяем, что это действительно отели
+                            first_item = current_obj[0]
+                            if isinstance(first_item, dict) and any(key in first_item for key in ['hotelname', 'hotelcode', 'tours']):
+                                hotels = current_obj
+                                logger.debug(f"✅ Найдены отели по пути: {path_str}")
+                                break
+                        elif isinstance(current_obj, dict):
+                            # Может быть единственный отель
+                            if any(key in current_obj for key in ['hotelname', 'hotelcode', 'tours']):
+                                hotels = [current_obj]
+                                logger.debug(f"✅ Найден единственный отель по пути: {path_str}")
+                                break
+                                
+                except Exception as e:
+                    logger.debug(f"⚠️ Ошибка при проверке пути {path_str}: {e}")
+                    continue
+            
             if not hotels:
+                logger.info("❌ Не удалось найти отели в данных")
+                logger.info(f"🔍 Доступные ключи верхнего уровня: {list(raw_data.keys())}")
+                
+                # Дополнительная диагностика
+                if "data" in raw_data:
+                    data_obj = raw_data["data"]
+                    if isinstance(data_obj, dict):
+                        logger.info(f"🔍 Ключи в data: {list(data_obj.keys())}")
+                        
+                        if "result" in data_obj:
+                            result_obj = data_obj["result"]
+                            if isinstance(result_obj, dict):
+                                logger.info(f"🔍 Ключи в result: {list(result_obj.keys())}")
+                            else:
+                                logger.info(f"🔍 Тип result: {type(result_obj)}")
+                    else:
+                        logger.info(f"🔍 Тип data: {type(data_obj)}")
+                
                 return None
+            
+            logger.info(f"📦 Обрабатываем {len(hotels)} отелей из сырых данных")
             
             min_price = float('inf')
             image_link = "https://via.placeholder.com/300x200?text=No+Image"
             
-            for hotel in hotels:
-                # Извлекаем фото отеля
-                hotel_picture = (
-                    hotel.get("picturelink") or 
-                    hotel.get("hotelpicture") or 
-                    hotel.get("picture") or 
-                    hotel.get("image")
-                )
+            for i, hotel in enumerate(hotels):
+                if not isinstance(hotel, dict):
+                    continue
+                    
+                hotel_name = hotel.get('hotelname', f'Hotel_{i+1}')
+                logger.info(f"🏨 Отель {i+1}: {hotel_name}")
                 
-                if hotel_picture and isinstance(hotel_picture, str) and hotel_picture.startswith('http'):
-                    image_link = hotel_picture
+                # Извлекаем фото отеля
+                photo_fields = ['picturelink', 'hotelpicture', 'picture', 'image']
+                for field in photo_fields:
+                    hotel_picture = hotel.get(field)
+                    if hotel_picture and isinstance(hotel_picture, str) and hotel_picture.startswith('http'):
+                        image_link = hotel_picture
+                        logger.info(f"📸 Найдено фото в поле {field}: {hotel_picture}")
+                        break
                 
                 # Извлекаем цены из туров
                 tours = hotel.get("tours", [])
+                
+                logger.info(f"🎯 Поле tours в отеле {hotel_name}: тип={type(tours)}, содержимое={str(tours)[:100]}...")
+                
+                # Нормализуем туры в список
                 if isinstance(tours, dict):
                     tours = [tours]  # Если один тур пришел как объект
+                    logger.info(f"   Преобразовано из dict в list с 1 элементом")
                 elif not isinstance(tours, list):
+                    logger.info(f"⚠️ Неожиданный тип туров: {type(tours)}")
                     continue
                 
-                for tour in tours:
+                logger.info(f"🎯 Найдено {len(tours)} туров в отеле {hotel_name}")
+                
+                for j, tour in enumerate(tours):
+                    if not isinstance(tour, dict):
+                        logger.warning(f"⚠️ Тур {j+1} не является словарем: {type(tour)}")
+                        continue
+                        
+                    logger.info(f"   Тур {j+1}: ключи={list(tour.keys())}")
+                    
                     try:
                         price = tour.get("price")
+                        logger.info(f"   Цена из тура {j+1}: {repr(price)} (тип: {type(price)})")
+                        
                         if price is not None:
-                            price = float(price)
+                            # Пробуем преобразовать в число
+                            if isinstance(price, str):
+                                # Очищаем строку от лишних символов
+                                price_str = ''.join(c for c in price if c.isdigit() or c == '.')
+                                if price_str:
+                                    price = float(price_str)
+                                    logger.info(f"   Преобразована строка в число: {price}")
+                                else:
+                                    logger.warning(f"   Не удалось очистить строку цены: {repr(price)}")
+                                    continue
+                            else:
+                                price = float(price)
+                                logger.info(f"   Преобразовано в число: {price}")
+                            
                             if price > 0 and price < min_price:
                                 min_price = price
-                    except (ValueError, TypeError):
+                                logger.info(f"💰 Новая минимальная цена: {price} (отель: {hotel_name})")
+                                
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"⚠️ Ошибка парсинга цены в туре {j+1}: {e}")
                         continue
             
             if min_price == float('inf'):
+                logger.info("❌ Не найдены валидные цены")
                 return None
+            
+            logger.info(f"✅ Итоговая минимальная цена: {min_price}, фото: {image_link}")
             
             return (int(min_price), image_link)
             

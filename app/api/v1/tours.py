@@ -317,7 +317,7 @@ async def get_city_directions(
     except Exception as e:
         logger.error(f"❌ Ошибка при получении направлений по городам: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @router.get("/directions/popular")
 async def get_popular_directions(
     limit: int = Query(6, ge=1, le=20, description="Количество популярных направлений")
@@ -585,6 +585,32 @@ async def diagnose_directions_system():
     except Exception as e:
         logger.error(f"❌ Ошибка при диагностике: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+# Добавьте этот endpoint после других направлений endpoints
+@router.get("/directions/debug-api")
+async def debug_tourvisor_api():
+    """Диагностика API TourVisor для отладки"""
+    try:
+        # Проверяем что возвращает API стран
+        countries_data = await tourvisor_client.get_references("country")
+        
+        # Проверяем что возвращает API курортов для известной страны
+        regions_data = await tourvisor_client.get_references("region", regcountry=1)  # Египет
+        
+        return {
+            "countries_response": {
+                "keys": list(countries_data.keys()) if countries_data else [],
+                "sample_data": str(countries_data)[:500] if countries_data else "No data",
+                "type": type(countries_data).__name__
+            },
+            "regions_response": {
+                "keys": list(regions_data.keys()) if regions_data else [],
+                "sample_data": str(regions_data)[:500] if regions_data else "No data", 
+                "type": type(regions_data).__name__
+            }
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
 
 # ========== АКТУАЛИЗАЦИЯ ТУРОВ ==========
 

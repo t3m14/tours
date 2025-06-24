@@ -12,6 +12,8 @@ from app.tasks.cache_warmup import warm_up_cache
 from app.tasks.random_tours_update import update_random_tours
 from app.tasks.mass_directions_update import periodic_directions_update, initial_directions_collection
 from app.utils.logger import setup_logger
+from fastapi.staticfiles import StaticFiles
+import os
 
 logger = setup_logger(__name__)
 
@@ -58,7 +60,12 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan
 )
-
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="Travel Agency API",
+        description="API для турагентства с интеграцией TourVisor",
+        version="1.0.0"
+    )
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -216,6 +223,25 @@ async def get_system_info():
         }
     }
 
+from app.api.v1.directions import router as directions_router
+# В функцию create_app() добавить подключение роутера:
+app.include_router(
+    directions_router, 
+    prefix="/api/v1/directions", 
+    tags=["Directions - Новый сервис направлений"]
+)
+
+
+
+static_path = os.path.join(os.path.dirname(__file__), "services", "mockup_images")
+if os.path.exists(static_path):
+    app.mount("/static/mockup_images", StaticFiles(directory=static_path), name="mockup_images")
+    print(f"📁 Статические файлы mockup_images подключены: {static_path}")
+else:
+    print(f"⚠️ Папка с картинками не найдена: {static_path}")
+    # Создаем папку если её нет
+    os.makedirs(static_path, exist_ok=True)
+    print(f"📁 Создана папка для картинок: {static_path}")
 if __name__ == "__main__":
     import uvicorn
     from datetime import datetime

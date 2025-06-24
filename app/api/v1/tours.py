@@ -285,7 +285,6 @@ async def get_destinations():
         
         logger.info("🏖️ Запрос направлений")
         
-<<<<<<< HEAD
         result = await city_directions_service.get_all_city_directions(
             country_id=country_id,
             limit_per_country=limit_per_country
@@ -332,9 +331,6 @@ async def collect_all_directions(
         
         # Получаем статистику
         status = await directions_service.get_directions_status()
-=======
-        destinations = await destinations_service.get_destinations()
->>>>>>> 1c7320b333b17a8546510ca837c654a994dafd4e
         
         return {
             "destinations": destinations,

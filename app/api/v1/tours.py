@@ -11,7 +11,6 @@ from app.models.tour import (
 )
 from app.services.tour_service import tour_service
 from app.services.random_tours_service import random_tours_service
-from app.services.directions_service import directions_service
 from app.services.photo_service import photo_service
 from app.services.price_service import price_service
 from app.core.tourvisor_client import tourvisor_client
@@ -268,43 +267,25 @@ async def get_random_tours_stats():
         }
 # ========== НАПРАВЛЕНИЯ ==========
 
-@router.get("/directions", response_model=List[DirectionInfo])
-async def get_directions():
+@router.get("/destinations")
+async def get_destinations():
     """
-    Получение списка направлений с минимальными ценами и фотографиями отелей
-    Автоматически использует долгосрочный кэш или запускает массовый сбор
+    Получение 15 туристических направлений
+    
+    Возвращает направления из популярных стран (Египет, Турция, Таиланд) с:
+    - Названием города/курорта
+    - Country ID  
+    - Минимальной ценой среди всех туров
+    - Фотографией любого отеля в этом городе
+    
+    Кэшируется на 24 часа.
     """
     try:
-        logger.info("🌍 Получение направлений")
-        result = await directions_service.get_directions_with_prices()
-        logger.info(f"✅ Получено {len(result)} направлений")
-        return result
-    except Exception as e:
-        logger.error(f"❌ Ошибка при получении направлений: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/directions/cities")
-async def get_city_directions(
-    country_id: Optional[int] = Query(None, description="ID страны для фильтрации"),
-    limit_per_country: int = Query(12, ge=1, le=50, description="Максимум городов на страну")
-):
-    """
-    Получение направлений по городам (курортам) с фотографиями отелей
-    
-    Возвращает структуру:
-    - Список стран
-    - В каждой стране до 12 городов/курортов  
-    - Каждый город содержит: city_name, city_id, country_name, country_id, image_link, min_price
-    
-    Параметры:
-    - country_id: фильтрация по конкретной стране (опционально)
-    - limit_per_country: максимум городов на страну (по умолчанию 12)
-    """
-    try:
-        from app.services.city_directions_service import city_directions_service
+        from app.services.destinations_service import destinations_service
         
-        logger.info(f"🏙️ Получение направлений по городам (страна: {country_id}, лимит: {limit_per_country})")
+        logger.info("🏖️ Запрос направлений")
         
+<<<<<<< HEAD
         result = await city_directions_service.get_all_city_directions(
             country_id=country_id,
             limit_per_country=limit_per_country
@@ -351,239 +332,66 @@ async def collect_all_directions(
         
         # Получаем статистику
         status = await directions_service.get_directions_status()
+=======
+        destinations = await destinations_service.get_destinations()
+>>>>>>> 1c7320b333b17a8546510ca837c654a994dafd4e
         
         return {
-            "success": True,
-            "message": f"Массовый сбор завершен: {len(result)} направлений",
-            "statistics": {
-                "total_directions": len(result),
-                "with_real_photos": len([d for d in result if not d.image_link.startswith("https://via.placeholder.com")]),
-                "average_price": sum(d.min_price for d in result) / len(result) if result else 0,
-                "price_range": {
-                    "min": min(d.min_price for d in result) if result else 0,
-                    "max": max(d.min_price for d in result) if result else 0
-                }
-            },
-            "cache_info": status.get("master_cache", {}),
-            "recommendations": [
-                "Данные сохранены в долгосрочный кэш на 30 дней",
-                "Используйте /api/v1/tours/directions для быстрого доступа",
-                "Повторный сбор будет выполняться автоматически при необходимости"
-            ]
+            "destinations": destinations,
+            "total": len(destinations)
         }
         
     except Exception as e:
-        logger.error(f"❌ Ошибка при массовом сборе направлений: {e}")
+        logger.error(f"❌ Ошибка получения направлений: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/directions/status")
-async def get_directions_status():
-    """
-    Подробный статус системы направлений
-    """
+@router.post("/destinations/refresh")
+async def refresh_destinations():
+    """Принудительное обновление направлений"""
     try:
-        status = await directions_service.get_directions_status()
-        return status
-    except Exception as e:
-        logger.error(f"❌ Ошибка при получении статуса направлений: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/directions/refresh")
-async def refresh_directions():
-    """
-    Принудительное обновление направлений с очисткой кэша
-    """
-    try:
-        logger.info("🔄 Принудительное обновление направлений")
+        from app.services.destinations_service import destinations_service
         
-        result = await directions_service.refresh_directions()
+        logger.info("🔄 Обновление направлений")
+        
+        destinations = await destinations_service.refresh()
         
         return {
-            "success": True,
-            "message": f"Обновлено {len(result)} направлений",
-            "directions_count": len(result),
-            "sample_directions": [
-                {
-                    "name": d.name,
-                    "price": d.min_price,
-                    "has_real_photo": not d.image_link.startswith("https://via.placeholder.com")
-                }
-                for d in result[:5]
-            ]
+            "message": "Направления обновлены",
+            "destinations": destinations,
+            "total": len(destinations)
         }
         
     except Exception as e:
-        logger.error(f"❌ Ошибка при обновлении направлений: {e}")
+        logger.error(f"❌ Ошибка обновления направлений: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/directions/clear-cache")
-async def clear_directions_cache():
+@router.get("/destinations/status")
+async def get_destinations_status():
     """
-    Полная очистка всех кэшей направлений
+    Статус системы туристических направлений
     """
     try:
-        result = await directions_service.clear_all_cache()
-        return result
-    except Exception as e:
-        logger.error(f"❌ Ошибка при очистке кэша направлений: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/directions/progress")
-async def get_collection_progress():
-    """
-    Получение прогресса сбора направлений (если выполняется)
-    """
-    try:
-        progress_data = await directions_service.cache.get("directions_collection_progress")
+        from tourvisor_middleware.travel_agency_backend.app.services.destinations_service import tourist_destinations_service
         
-        if progress_data:
-            return {
-                "in_progress": progress_data.get("status", "").startswith("processing"),
-                "progress": progress_data
-            }
-        else:
-            return {
-                "in_progress": False,
-                "message": "Сбор направлений не выполняется"
-            }
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка при получении прогресса: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/directions/fix-issues")
-async def fix_directions_issues():
-    """
-    Исправление проблем с кэшированием направлений
-    """
-    try:
-        result = await directions_service.fix_cache_issues()
-        return result
-    except Exception as e:
-        logger.error(f"❌ Ошибка при исправлении проблем: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/directions/countries-info")
-async def get_countries_info():
-    """
-    Информация о доступных странах для сбора направлений
-    """
-    try:
-        # Получаем список всех стран из API
-        countries_data = await tourvisor_client.get_references("country")
-        countries_list = countries_data.get("country", [])
-        
-        if not isinstance(countries_list, list):
-            countries_list = [countries_list] if countries_list else []
-        
-        # Фильтруем валидные страны
-        valid_countries = []
-        for country in countries_list:
-            country_id = country.get("id")
-            country_name = country.get("name")
-            
-            if country_id and country_name:
-                try:
-                    valid_countries.append({
-                        "id": int(country_id),
-                        "name": country_name
-                    })
-                except (ValueError, TypeError):
-                    continue
-        
-        # Разделяем на популярные и остальные
-        popular_countries = [1, 4, 22, 8, 15, 35, 9, 11]
-        popular = [c for c in valid_countries if c["id"] in popular_countries]
-        others = [c for c in valid_countries if c["id"] not in popular_countries]
+        status = await tourist_destinations_service.get_cache_status()
         
         return {
-            "total_countries": len(valid_countries),
-            "popular_countries": {
-                "count": len(popular),
-                "countries": popular
-            },
-            "other_countries": {
-                "count": len(others),
-                "sample": others[:10] if len(others) > 10 else others
-            },
-            "collection_info": {
-                "estimated_time": f"{len(valid_countries) * 0.5:.1f} - {len(valid_countries) * 1:.1f} минут",
-                "features": [
-                    "Получение реальных фотографий отелей",
-                    "Расчет минимальных цен через поиск",
-                    "Долгосрочное кэширование (30 дней)",
-                    "Отслеживание прогресса"
-                ]
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка при получении информации о странах: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ========== ДИАГНОСТИКА НАПРАВЛЕНИЙ ==========
-
-@router.get("/directions/diagnose")
-async def diagnose_directions_system():
-    """
-    Полная диагностика системы направлений
-    """
-    try:
-        # Проверяем все компоненты
-        diagnosis = {
+            "system": "tourist_destinations",
             "timestamp": datetime.now().isoformat(),
-            "components": {},
-            "recommendations": []
+            "cache_status": status,
+            "popular_countries": {
+                1: "Египет",
+                4: "Турция", 
+                22: "Таиланд"
+            },
+            "endpoints": {
+                "get_destinations": "/api/v1/tours/destinations",
+                "refresh_destinations": "/api/v1/tours/destinations/refresh",
+                "check_status": "/api/v1/tours/destinations/status"
+            }
         }
         
-        # 1. Проверяем TourVisor API
-        try:
-            countries_test = await tourvisor_client.get_references("country")
-            diagnosis["components"]["tourvisor_api"] = {
-                "status": "healthy" if countries_test else "degraded",
-                "countries_available": len(countries_test.get("country", [])) if countries_test else 0
-            }
-        except Exception as e:
-            diagnosis["components"]["tourvisor_api"] = {
-                "status": "unhealthy",
-                "error": str(e)
-            }
-        
-        # 2. Проверяем кэши
-        try:
-            api_cache = await directions_service.cache.get("api_directions_response")
-            master_cache = await directions_service.cache.get("master_directions_all_countries")
-            
-            diagnosis["components"]["cache_system"] = {
-                "api_cache": {
-                    "exists": bool(api_cache),
-                    "count": len(api_cache) if api_cache else 0
-                },
-                "master_cache": {
-                    "exists": bool(master_cache),
-                    "count": len(master_cache) if master_cache else 0
-                }
-            }
-        except Exception as e:
-            diagnosis["components"]["cache_system"] = {
-                "status": "unhealthy",
-                "error": str(e)
-            }
-        
-        # 3. Генерируем рекомендации
-        if not diagnosis["components"].get("cache_system", {}).get("master_cache", {}).get("exists"):
-            diagnosis["recommendations"].append("🔄 Запустите массовый сбор: POST /api/v1/tours/directions/collect-all")
-        
-        if diagnosis["components"].get("tourvisor_api", {}).get("status") != "healthy":
-            diagnosis["recommendations"].append("⚠️ Проблемы с TourVisor API - проверьте настройки")
-        
-        if not diagnosis["recommendations"]:
-            diagnosis["recommendations"].append("✅ Система направлений работает корректно")
-        
-        return diagnosis
-        
     except Exception as e:
-        logger.error(f"❌ Ошибка при диагностике: {e}")
+        logger.error(f"❌ Ошибка получения статуса: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 # Добавьте этот endpoint после других направлений endpoints
 @router.get("/directions/debug-api")

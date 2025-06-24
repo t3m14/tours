@@ -3,8 +3,8 @@ from typing import List
 
 class Settings:
     # TourVisor API настройки
-    TOURVISOR_AUTH_LOGIN = os.getenv("TOURVISOR_AUTH_LOGIN", "")
-    TOURVISOR_AUTH_PASS = os.getenv("TOURVISOR_AUTH_PASS", "")
+    TOURVISOR_AUTH_LOGIN = os.getenv("TOURVISOR_AUTH_LOGIN", "alexandratur@yandex.ru")
+    TOURVISOR_AUTH_PASS = os.getenv("TOURVISOR_AUTH_PASS", "BqgYFUGKesS6")
     TOURVISOR_BASE_URL = os.getenv("TOURVISOR_BASE_URL", "http://tourvisor.ru/xml")
     
     # Redis настройки для кэша

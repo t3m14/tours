@@ -2,6 +2,12 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
+# app/models/tour.py - простое исправление моделей:
+
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any, Union
+
+
 class TourSearchRequest(BaseModel):
     departure: int = Field(..., description="Код города вылета")
     country: int = Field(..., description="Код страны")
@@ -140,32 +146,42 @@ class TourActualizationRequest(BaseModel):
     request_check: int = Field(0, description="0-авто, 1-принудительно, 2-из кэша")
     currency: int = Field(0, description="Валюта вывода")
 
+class FlightPoint(BaseModel):
+    """Точка вылета или прилета"""
+    port: Union[str, Dict[str, Any]] = Field(..., description="Аэропорт (код или объект)")
+    time: str = Field(..., description="Время")
+    date: str = Field(..., description="Дата")
+
 class Flight(BaseModel):
-    company: Dict[str, Any]
-    number: str
-    plane: Optional[str] = None
-    departure: Dict[str, str]
-    arrival: Dict[str, str]
+    """Информация о рейсе"""
+    company: Dict[str, Any] = Field(..., description="Информация об авиакомпании")
+    number: str = Field(..., description="Номер рейса")
+    plane: Optional[str] = Field(None, description="Тип самолета")
+    departure: FlightPoint = Field(..., description="Информация о вылете")
+    arrival: FlightPoint = Field(..., description="Информация о прилете")
 
 class FlightInfo(BaseModel):
-    forward: List[Flight]
-    backward: List[Flight]
-    dateforward: str
-    datebackward: str
-    price: Dict[str, Any]
-    fuelcharge: Dict[str, Any]
-    isdefault: bool
+    """Полная информация о рейсах тура"""
+    forward: List[Flight] = Field(..., description="Рейсы туда")
+    backward: List[Flight] = Field(..., description="Рейсы обратно")
+    dateforward: str = Field(..., description="Дата вылета туда")
+    datebackward: str = Field(..., description="Дата вылета обратно")
+    price: Dict[str, Any] = Field(..., description="Цена рейсов")
+    fuelcharge: Dict[str, Any] = Field(..., description="Топливные сборы")
+    isdefault: bool = Field(..., description="Рейс по умолчанию")
+
 
 class TourContent(BaseModel):
-    addpayments: Optional[List[Dict[str, Any]]] = None
-    contents: Optional[List[str]] = None
-    flags: Optional[Dict[str, bool]] = None
+    """Дополнительная информация о туре"""
+    addpayments: Optional[List[Dict[str, Any]]] = Field(None, description="Доплаты")
+    contents: Optional[List[str]] = Field(None, description="Содержание тура")
+    flags: Optional[Dict[str, bool]] = Field(None, description="Флаги тура")
 
 class DetailedTourInfo(BaseModel):
-    tour: Dict[str, Any]
-    flights: List[FlightInfo]
-    tourinfo: Optional[TourContent] = None
-
+    """Детальная информация о туре с рейсами"""
+    tour: Dict[str, Any] = Field(..., description="Основная информация о туре")
+    flights: List[FlightInfo] = Field(..., description="Информация о рейсах")
+    tourinfo: Optional[TourContent] = Field(None, description="Дополнительная информация")
 
 # app/models/tour.py - добавить эти модели
 

@@ -123,30 +123,68 @@ class TourService:
             logger.error(f"Ошибка при продолжении поиска: {e}")
             raise
     
+    
     async def actualize_tour(self, request: TourActualizationRequest) -> DetailedTourInfo:
         """Актуализация тура"""
         try:
+            logger.info(f"🔍 Начинаем актуализацию тура {request.tour_id}")
+            
             # Простая актуализация
             basic_info = await tourvisor_client.actualize_tour(
                 request.tour_id,
                 request.request_check
             )
             
+            logger.info(f"📋 Базовая актуализация завершена")
+            
             # Детальная актуализация с рейсами
             detailed_info = await tourvisor_client.get_detailed_actualization(
                 request.tour_id
             )
             
-            return DetailedTourInfo(
-                tour=basic_info.get("tour", {}),
-                flights=detailed_info.get("flights", []),
-                tourinfo=detailed_info.get("tourinfo", {})
+            logger.info(f"✈️ Детальная актуализация завершена")
+            
+            # Безопасное создание ответа
+            tour_data = basic_info.get("tour", {}) if basic_info else {}
+            flights_data = detailed_info.get("flights", []) if detailed_info else []
+            tourinfo_data = detailed_info.get("tourinfo", {}) if detailed_info else {}
+            
+            # Обрабатываем flights_data для совместимости с Pydantic
+            processed_flights = []
+            if isinstance(flights_data, list):
+                for flight_group in flights_data:
+                    if isinstance(flight_group, dict):
+                        # Создаем безопасную копию
+                        safe_flight = {
+                            "forward": flight_group.get("forward", []),
+                            "backward": flight_group.get("backward", []),
+                            "dateforward": flight_group.get("dateforward", ""),
+                            "datebackward": flight_group.get("datebackward", ""),
+                            "price": flight_group.get("price", {}),
+                            "fuelcharge": flight_group.get("fuelcharge", {}),
+                            "isdefault": flight_group.get("isdefault", False)
+                        }
+                        processed_flights.append(safe_flight)
+            
+            result = DetailedTourInfo(
+                tour=tour_data,
+                flights=processed_flights,
+                tourinfo=tourinfo_data
             )
             
+            logger.info(f"✅ Актуализация тура {request.tour_id} успешно завершена")
+            return result
+            
         except Exception as e:
-            logger.error(f"Ошибка при актуализации тура: {e}")
-            raise
-    
+            logger.error(f"❌ Ошибка при актуализации тура {request.tour_id}: {e}")
+            logger.error(f"❌ Тип ошибки: {type(e)}")
+            
+            # Возвращаем пустую структуру при ошибке
+            return DetailedTourInfo(
+                tour={},
+                flights=[],
+                tourinfo={}
+            )
     async def search_tour_by_id(self, tour_id: str) -> Optional[Dict[str, Any]]:
         """Поиск тура по ID"""
         try:

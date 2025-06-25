@@ -1090,7 +1090,142 @@ async def clear_specific_tour_cache():
             "success": False,
             "error": str(e)
         }
+# app/api/v1/tours.py - добавьте этот endpoint для отладки:
 
+@router.post("/debug-raw-actualize")
+async def debug_raw_actualize(request: TourActualizationRequest):
+    """
+    Получение сырых данных актуализации без обработки Pydantic
+    """
+    try:
+        logger.info(f"🐛 RAW DEBUG: Запрос сырых данных тура {request.tour_id}")
+        
+        # Получаем сырые данные от TourVisor
+        basic_info = await tourvisor_client.actualize_tour(
+            request.tour_id,
+            request.request_check
+        )
+        
+        detailed_info = await tourvisor_client.get_detailed_actualization(
+            request.tour_id
+        )
+        
+        # Возвращаем сырые данные для анализа
+        response = {
+            "tour_id": request.tour_id,
+            "basic_info": basic_info,
+            "detailed_info": detailed_info,
+            "basic_info_type": str(type(basic_info)),
+            "detailed_info_type": str(type(detailed_info)),
+            "basic_keys": list(basic_info.keys()) if isinstance(basic_info, dict) else "not dict",
+            "detailed_keys": list(detailed_info.keys()) if isinstance(detailed_info, dict) else "not dict"
+        }
+        
+        # Если есть flights, анализируем их структуру
+        if isinstance(detailed_info, dict) and "flights" in detailed_info:
+            flights = detailed_info["flights"]
+            response["flights_analysis"] = {
+                "flights_type": str(type(flights)),
+                "flights_count": len(flights) if isinstance(flights, list) else "not list",
+                "first_flight_structure": {}
+            }
+            
+            if isinstance(flights, list) and len(flights) > 0:
+                first_flight = flights[0]
+                response["flights_analysis"]["first_flight_structure"] = {
+                    "type": str(type(first_flight)),
+                    "keys": list(first_flight.keys()) if isinstance(first_flight, dict) else "not dict"
+                }
+                
+                # Анализируем структуру forward/backward
+                if isinstance(first_flight, dict):
+                    for direction in ["forward", "backward"]:
+                        if direction in first_flight:
+                            segments = first_flight[direction]
+                            response["flights_analysis"][f"{direction}_analysis"] = {
+                                "type": str(type(segments)),
+                                "count": len(segments) if isinstance(segments, list) else "not list"
+                            }
+                            
+                            if isinstance(segments, list) and len(segments) > 0:
+                                first_segment = segments[0]
+                                response["flights_analysis"][f"{direction}_segment_structure"] = {
+                                    "type": str(type(first_segment)),
+                                    "keys": list(first_segment.keys()) if isinstance(first_segment, dict) else "not dict"
+                                }
+                                
+                                # Анализируем departure/arrival
+                                if isinstance(first_segment, dict):
+                                    for point in ["departure", "arrival"]:
+                                        if point in first_segment:
+                                            point_data = first_segment[point]
+                                            response["flights_analysis"][f"{direction}_{point}_structure"] = {
+                                                "type": str(type(point_data)),
+                                                "keys": list(point_data.keys()) if isinstance(point_data, dict) else "not dict"
+                                            }
+                                            
+                                            # Анализируем port
+                                            if isinstance(point_data, dict) and "port" in point_data:
+                                                port_data = point_data["port"]
+                                                response["flights_analysis"][f"{direction}_{point}_port"] = {
+                                                    "type": str(type(port_data)),
+                                                    "value": port_data,
+                                                    "keys": list(port_data.keys()) if isinstance(port_data, dict) else "not dict"
+                                                }
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"🐛 RAW DEBUG ERROR: {e}")
+        return {
+            "error": str(e),
+            "error_type": str(type(e)),
+            "tour_id": request.tour_id
+        }
+@router.post("/debug-actualize")
+async def debug_actualize_tour(request: TourActualizationRequest):
+    """
+    Отладочная актуализация с детальными логами
+    """
+    try:
+        logger.info(f"🐛 DEBUG: Запрос актуализации тура {request.tour_id}")
+        
+        # Сначала простая актуализация
+        basic_info = await tourvisor_client.actualize_tour(
+            request.tour_id,
+            request.request_check
+        )
+        
+        logger.info(f"🐛 DEBUG: Базовая информация получена: {basic_info}")
+        
+        # Затем детальная актуализация
+        detailed_info = await tourvisor_client.get_detailed_actualization(
+            request.tour_id
+        )
+        
+        logger.info(f"🐛 DEBUG: Детальная информация получена: {detailed_info}")
+        
+        result = DetailedTourInfo(
+            tour=basic_info.get("tour", {}),
+            flights=detailed_info.get("flights", []),
+            tourinfo=detailed_info.get("tourinfo", {})
+        )
+        
+        logger.info(f"🐛 DEBUG: Финальный результат: {result}")
+        
+        return {
+            "result": result,
+            "debug_info": {
+                "basic_response_keys": list(basic_info.keys()) if isinstance(basic_info, dict) else [],
+                "detailed_response_keys": list(detailed_info.keys()) if isinstance(detailed_info, dict) else [],
+                "basic_response_size": len(str(basic_info)),
+                "detailed_response_size": len(str(detailed_info))
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"🐛 DEBUG: Ошибка при отладочной актуализации: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 # ========== ИНФОРМАЦИОННЫЕ ENDPOINTS ==========
 
 @router.get("/find-tour/meal-types")

@@ -810,7 +810,7 @@ class TourVisorClient:
         }
         
         return await self._make_request("hotel.php", params)
-    
+
     async def actualize_tour(self, tour_id: str, request_check: int = 0) -> Dict[str, Any]:
         """Актуализация тура"""
         params = {
@@ -819,8 +819,35 @@ class TourVisorClient:
             "format": "json"
         }
         
-        return await self._make_request("actualize.php", params)
-    
+        # Добавляем детальное логирование
+        logger.info(f"🔍 Актуализация тура {tour_id} с параметрами: {params}")
+        
+        try:
+            result = await self._make_request("actualize.php", params)
+            
+            # Логируем результат запроса
+            logger.info(f"📊 Результат актуализации для {tour_id}:")
+            logger.info(f"   - Размер ответа: {len(str(result))} символов")
+            logger.info(f"   - Ключи в ответе: {list(result.keys()) if isinstance(result, dict) else 'не словарь'}")
+            
+            if isinstance(result, dict):
+                if "tour" in result:
+                    tour_data = result["tour"]
+                    logger.info(f"   - Данные тура: {len(str(tour_data))} символов")
+                    if isinstance(tour_data, dict):
+                        logger.info(f"   - Ключи тура: {list(tour_data.keys())}")
+                    else:
+                        logger.info(f"   - Тип данных тура: {type(tour_data)}")
+                
+                if "error" in result:
+                    logger.warning(f"⚠️ Ошибка в ответе TourVisor: {result['error']}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при актуализации тура {tour_id}: {e}")
+            raise
+
     async def get_detailed_actualization(self, tour_id: str) -> Dict[str, Any]:
         """Детальная актуализация тура с информацией о рейсах"""
         params = {

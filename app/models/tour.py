@@ -187,8 +187,8 @@ class DetailedTourInfo(BaseModel):
 
 class SpecificTourSearchRequest(BaseModel):
     """Запрос поиска конкретного тура"""
-    departure: int = Field(..., description="Код города вылета")
-    country: int = Field(..., description="Код страны")
+    departure: Optional[int] = Field(None, description="Код города вылета")
+    country: Optional[int] = Field(None, description="Код страны")
     
     # Фильтры отеля
     hotel_stars: Optional[int] = Field(None, ge=1, le=5, description="Звездность отеля")
@@ -212,8 +212,7 @@ class SpecificTourSearchRequest(BaseModel):
     
     # Дополнительные фильтры
     rating: Optional[float] = Field(None, ge=1.0, le=5.0, description="Минимальный рейтинг отеля")
-    hotel_type: Optional[str] = Field(None, description="Тип отеля: beach,city,family,deluxe,etc")
-    
+    hotel_type: Optional[str] = Field(None, description="Тип отеля: beach,city,family,deluxe,etc")    
     class Config:
         schema_extra = {
             "example": {

@@ -347,3 +347,166 @@ class HotelSearchRequest(BaseModel):
                 "children": 0
             }
         }
+# Добавить в конец файла app/models/tour.py (после существующих моделей)
+
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+
+# ===== МОДЕЛИ ДЛЯ РАСШИРЕННОЙ ИНФОРМАЦИИ ОБ ОТЕЛЕ =====
+
+class HotelReview(BaseModel):
+    """Отзыв об отеле"""
+    name: Optional[str] = Field("", description="Имя туриста")
+    content: Optional[str] = Field("", description="Содержание отзыва")
+    positive: Optional[str] = Field("", description="Плюсы")
+    negative: Optional[str] = Field("", description="Минусы")
+    travel_time: Optional[str] = Field("", description="Время поездки")
+    rate: Optional[int] = Field(None, description="Оценка от 1 до 5")
+    review_date: Optional[str] = Field("", description="Дата публикации")
+    review_time: Optional[str] = Field("", description="Время публикации")
+    source_link: Optional[str] = Field("", description="Ссылка на источник")
+
+class HotelImage(BaseModel):
+    """Изображение отеля"""
+    url: str = Field("", description="URL изображения")
+    description: Optional[str] = Field("", description="Описание изображения")
+
+class HotelLocation(BaseModel):
+    """Местоположение отеля"""
+    latitude: Optional[float] = Field(None, description="Широта")
+    longitude: Optional[float] = Field(None, description="Долгота")
+    address: Optional[str] = Field("", description="Адрес")
+    distance_to_sea: Optional[int] = Field(None, description="Расстояние до моря в метрах")
+
+class HotelFacilities(BaseModel):
+    """Удобства отеля"""
+    territory: Optional[str] = Field("", description="Инфраструктура отеля")
+    in_room: Optional[str] = Field("", description="Удобства в номере")
+    room_types: Optional[List[str]] = Field(default_factory=list, description="Типы номеров")
+    services: Optional[List[str]] = Field(default_factory=list, description="Все услуги")
+    services_free: Optional[List[str]] = Field(default_factory=list, description="Бесплатные услуги")
+    services_paid: Optional[List[str]] = Field(default_factory=list, description="Платные услуги")
+    animation: Optional[str] = Field("", description="Развлечения и анимация")
+    child_services: Optional[str] = Field("", description="Услуги для детей")
+    beach_description: Optional[str] = Field("", description="Описание пляжа")
+    meal_types: Optional[List[str]] = Field(default_factory=list, description="Доступные типы питания")
+    meal_description: Optional[str] = Field("", description="Описание питания")
+
+class TourItemInfo(BaseModel):
+    """Информация об отдельном туре"""
+    tour_id: Optional[str] = Field("", description="ID тура")
+    operator_name: str = Field("", description="Название туроператора")
+    operator_code: Optional[str] = Field("", description="Код туроператора")
+    fly_date: str = Field("", description="Дата вылета")
+    nights: int = Field(7, description="Количество ночей")
+    price: float = Field(0, description="Цена тура")
+    fuel_charge: Optional[float] = Field(0, description="Топливный сбор")
+    price_ue: Optional[float] = Field(None, description="Цена в у.е.")
+    meal: str = Field("", description="Тип питания (сокращенно)")
+    meal_russian: Optional[str] = Field("", description="Тип питания (полное название)")
+    room_type: str = Field("", description="Тип номера")
+    placement: Optional[str] = Field("", description="Размещение")
+    adults: int = Field(2, description="Количество взрослых")
+    children: int = Field(0, description="Количество детей")
+    tour_name: Optional[str] = Field("", description="Название тура")
+    tour_link: Optional[str] = Field("", description="Ссылка на тур у оператора")
+    currency: str = Field("RUB", description="Валюта")
+    is_regular: bool = Field(False, description="Тур на регулярных рейсах")
+    is_promo: bool = Field(False, description="Промо тур")
+    is_on_request: bool = Field(False, description="Тур под запрос")
+    flight_status: Optional[int] = Field(None, description="Статус рейса")
+    hotel_status: int = Field(1, description="Статус отеля")
+
+class HotelInfoComplete(BaseModel):
+    """Полная информация об отеле"""
+    # Основная информация
+    hotel_id: Optional[str] = Field("", description="ID отеля")
+    hotel_name: str = Field("", description="Название отеля")
+    hotel_stars: int = Field(3, description="Звездность отеля")
+    hotel_rating: Optional[float] = Field(None, description="Рейтинг отеля")
+    
+    # Местоположение
+    country_name: str = Field("", description="Название страны")
+    country_code: int = Field(0, description="Код страны")
+    region_name: str = Field("", description="Название курорта")
+    region_code: int = Field(0, description="Код курорта")
+    location: Optional[HotelLocation] = Field(None, description="Местоположение")
+    
+    # Описание
+    description: Optional[str] = Field("", description="Описание отеля")
+    short_description: Optional[str] = Field("", description="Краткое описание")
+    
+    # Контактная информация
+    phone: Optional[str] = Field("", description="Телефон отеля")
+    website: Optional[str] = Field("", description="Сайт отеля")
+    
+    # Техническая информация
+    build_year: Optional[int] = Field(None, description="Год постройки")
+    renovation_year: Optional[int] = Field(None, description="Год последнего ремонта")
+    hotel_area: Optional[str] = Field("", description="Площадь отеля")
+    
+    # Удобства и услуги
+    facilities: Optional[HotelFacilities] = Field(None, description="Удобства отеля")
+    
+    # Изображения
+    images: List[HotelImage] = Field(default_factory=list, description="Изображения отеля")
+    images_count: int = Field(0, description="Количество изображений")
+    main_image: Optional[str] = Field("", description="Главное изображение")
+    
+    # Отзывы
+    reviews: List[HotelReview] = Field(default_factory=list, description="Отзывы об отеле")
+    
+    # Ссылки на описания
+    full_description_link: Optional[str] = Field("", description="Ссылка на полное описание")
+    reviews_link: Optional[str] = Field("", description="Ссылка на отзывы")
+    
+    # Метаданные
+    has_photos: bool = Field(False, description="Есть ли фотографии")
+    has_coordinates: bool = Field(False, description="Есть ли координаты")
+    has_description: bool = Field(False, description="Есть ли детальное описание")
+    has_reviews: bool = Field(False, description="Есть ли отзывы")
+    
+    # Дополнительные поля для совместимости
+    hotel_description: Optional[str] = Field("", description="Краткое описание (для совместимости)")
+    hotel_picture: Optional[str] = Field("", description="Главное фото (для совместимости)")
+    hotel_review_link: Optional[str] = Field("", description="Ссылка на отзывы (для совместимости)")
+    sea_distance: int = Field(0, description="Расстояние до моря")
+    is_photo: bool = Field(False, description="Есть ли фото")
+    is_coords: bool = Field(False, description="Есть ли координаты")
+    is_description: bool = Field(False, description="Есть ли описание")
+    is_reviews: bool = Field(False, description="Есть ли отзывы")
+
+class HotelWithToursCompleteResponse(BaseModel):
+    """Полный ответ с отелем и всеми турами"""
+    hotel_info: HotelInfoComplete = Field(..., description="Полная информация об отеле")
+    tours: List[TourItemInfo] = Field(default_factory=list, description="Список всех доступных туров")
+    tours_count: int = Field(0, description="Количество найденных туров")
+    search_results_count: int = Field(0, description="Общее количество результатов поиска")
+    is_fallback: bool = Field(False, description="Был ли применен fallback поиск")
+    fallback_strategy: Optional[str] = Field("", description="Описание примененной fallback стратегии")
+    
+    # Статистика по турам
+    price_range: Optional[Dict[str, float]] = Field(None, description="Диапазон цен")
+    operators: List[str] = Field(default_factory=list, description="Список операторов")
+    available_dates: List[str] = Field(default_factory=list, description="Доступные даты")
+    meal_types: List[str] = Field(default_factory=list, description="Доступные типы питания")
+
+# Модель ошибки поиска
+class TourSearchError(BaseModel):
+    """Ошибка поиска тура с предложениями"""
+    error: str = Field("", description="Описание ошибки")
+    message: str = Field("", description="Подробное сообщение")
+    suggestions: List[str] = Field(default_factory=list, description="Предложения по изменению критериев")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "error": "Тур не найден",
+                "message": "По заданным критериям туры не найдены",
+                "suggestions": [
+                    "Попробуйте снизить звездность до 3 звезд",
+                    "Увеличьте максимальную цену до 100000 рублей",
+                    "Попробуйте изменить даты поездки"
+                ]
+            }
+        }

@@ -974,6 +974,55 @@ class TourVisorClient:
             })
         
         return debug_info
+    # Добавить в app/core/tourvisor_client.py
 
+    async def get_hotel_info(self, hotel_code: str, include_reviews: bool = True, 
+                           big_images: bool = True, remove_tags: bool = True) -> Dict[str, Any]:
+        """
+        Получение детальной информации об отеле
+        
+        Args:
+            hotel_code: Код отеля
+            include_reviews: Включать отзывы (по умолчанию True)
+            big_images: Большие изображения 800px (по умолчанию True)
+            remove_tags: Убирать HTML теги из списков (по умолчанию True)
+        """
+        try:
+            params = {
+                "format": "json",
+                "hotelcode": hotel_code,
+                "authlogin": self.login,
+                "authpass": self.password
+            }
+            
+            # Дополнительные параметры
+            if include_reviews:
+                params["reviews"] = 1
+            
+            if big_images:
+                params["imgbig"] = 1
+            
+            if remove_tags:
+                params["removetags"] = 1
+            
+            logger.info(f"🏨 Запрос информации об отеле {hotel_code}")
+            
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.get(
+                    f"{self.base_url}/xml/hotel.php",
+                    params=params
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"✅ Получена информация об отеле {hotel_code}")
+                        return data
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ Ошибка получения информации об отеле {hotel_code}: {response.status} - {error_text}")
+                        raise Exception(f"HTTP {response.status}: {error_text}")
+                        
+        except Exception as e:
+            logger.error(f"❌ Ошибка запроса информации об отеле {hotel_code}: {e}")
+            raise
 # Синглтон клиента
 tourvisor_client = TourVisorClient()

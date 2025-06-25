@@ -614,7 +614,15 @@ async def clear_hotel_type_cache():
 
 # ========== ПОИСК КОНКРЕТНОГО ТУРА ==========
 
-@router.get("/find-tour")
+# Обновление для app/api/v1/tours.py
+
+from app.models.tour import (
+    # ... другие импорты ...
+    HotelWithToursCompleteResponse, TourSearchError
+)
+
+# Обновляем endpoint /find-tour
+@router.get("/find-tour", response_model=HotelWithToursCompleteResponse)
 async def find_specific_tour(
     # Основные параметры поиска
     departure: int = Query(..., description="Код города вылета"),
@@ -645,9 +653,10 @@ async def find_specific_tour(
     hotel_type: Optional[str] = Query(None, description="Тип отеля: beach,city,family,deluxe,etc"),
 ):
     """
-    Поиск конкретного тура по заданным параметрам
+    Поиск отеля со всеми доступными турами
     
-    Возвращает ОДИН тур, наиболее подходящий под критерии, или ошибку если ничего не найдено.
+    Возвращает информацию об отеле и все доступные туры в него,
+    отсортированные по цене.
     
     Примеры запросов:
     - /find-tour?departure=1&country=4&hotel_stars=4&meal_type=2
@@ -655,7 +664,7 @@ async def find_specific_tour(
     - /find-tour?departure=2&country=22&max_price=100000&hotel_stars=5
     """
     try:
-        logger.info(f"🔎 Поиск конкретного тура: страна {country}, город вылета {departure}")
+        logger.info(f"🔎 Поиск отеля с турами: страна {country}, город вылета {departure}")
         
         # Создаем объект запроса
         search_request = SpecificTourSearchRequest(
@@ -678,14 +687,16 @@ async def find_specific_tour(
         )
         
         # Выполняем поиск через сервис
-        found_tour = await specific_tour_service.find_specific_tour(search_request)
+        hotel_with_tours = await specific_tour_service.find_specific_tour(search_request)
         
-        logger.info(f"✅ Найден тур: {found_tour.hotel_name} - {found_tour.price} руб.")
-        return found_tour
+        logger.info(f"✅ Найден отель: {hotel_with_tours['hotel_info']['hotel_name']} с {hotel_with_tours['tours_count']} турами")
+        
+        return HotelWithToursCompleteResponse(**hotel_with_tours)
+        
     except HTTPException:
         raise
     except ValueError as e:
-        logger.warning(f"❌ Тур не найден: {e}")
+        logger.warning(f"❌ Отель не найден: {e}")
         
         # Создаем объект запроса для получения предложений
         search_request = SpecificTourSearchRequest(
@@ -712,15 +723,265 @@ async def find_specific_tour(
         raise HTTPException(
             status_code=404,
             detail=TourSearchError(
-                error="Тур не найден",
-                message="По заданным критериям туры не найдены",
+                error="Отель с турами не найден",
+                message="По заданным критериям отели с турами не найдены",
                 suggestions=suggestions
             ).dict()
         )
     except Exception as e:
-        logger.error(f"❌ Ошибка при поиске конкретного тура: {e}")
+        logger.error(f"❌ Ошибка при поиске отеля с турами: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# Также обновляем POST endpoint
+@router.post("/find-tour", response_model=HotelWithToursCompleteResponse)
+async def find_tour_post(search_request: SpecificTourSearchRequest):
+    """
+    Поиск отеля со всеми турами через POST запрос с телом
+    
+    Пример тела запроса:
+    {
+        "departure": 1,
+        "country": 4,
+        "hotel_stars": 4,
+        "meal_type": 2,
+        "nights": 7,
+        "adults": 2,
+        "max_price": 80000
+    }
+    """
+    try:
+        hotel_with_tours = await specific_tour_service.find_specific_tour(search_request)
+        return HotelWithToursCompleteResponse(**hotel_with_tours)
+    except Exception as e:
+        logger.error(f"❌ Ошибка POST поиска отеля с турами: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Добавляем новый endpoint для получения только одного лучшего тура (обратная совместимость)
+@router.get("/find-tour/best", response_model=FoundTourInfo)
+async def find_best_tour(
+    departure: int = Query(..., description="Код города вылета"),
+    country: int = Query(..., description="Код страны"),
+    hotel_stars: Optional[int] = Query(None, ge=1, le=5, description="Звездность отеля"),
+    hotel_name: Optional[str] = Query(None, min_length=3, description="Название отеля"),
+    hotel_id: Optional[str] = Query(None, description="ID отеля"),
+    region_code: Optional[int] = Query(None, description="Код курорта"),
+    nights: Optional[int] = Query(None, ge=1, le=30, description="Количество ночей"),
+    adults: int = Query(2, ge=1, le=8, description="Количество взрослых"),
+    children: int = Query(0, ge=0, le=4, description="Количество детей"),
+    meal_type: Optional[int] = Query(None, description="Тип питания (код)"),
+    max_price: Optional[int] = Query(None, gt=0, description="Максимальная цена"),
+    min_price: Optional[int] = Query(None, gt=0, description="Минимальная цена"),
+    date_from: Optional[str] = Query(None, description="Дата от (дд.мм.гггг)"),
+    date_to: Optional[str] = Query(None, description="Дата до (дд.мм.гггг)"),
+    rating: Optional[float] = Query(None, ge=1.0, le=5.0, description="Минимальный рейтинг отеля"),
+    hotel_type: Optional[str] = Query(None, description="Тип отеля: beach,city,family,deluxe,etc"),
+):
+    """
+    Поиск ОДНОГО лучшего тура (для обратной совместимости)
+    
+    Возвращает информацию только о самом подходящем туре.
+    """
+    try:
+        # Создаем объект запроса
+        search_request = SpecificTourSearchRequest(
+            departure=departure,
+            country=country,
+            hotel_stars=hotel_stars,
+            hotel_name=hotel_name,
+            hotel_id=hotel_id,
+            region_code=region_code,
+            nights=nights,
+            adults=adults,
+            children=children,
+            meal_type=meal_type,
+            max_price=max_price,
+            min_price=min_price,
+            date_from=date_from,
+            date_to=date_to,
+            rating=rating,
+            hotel_type=hotel_type
+        )
+        
+        # Получаем отель со всеми турами
+        hotel_with_tours = await specific_tour_service.find_specific_tour(search_request)
+        
+        # Берем самый дешевый тур (первый в отсортированном списке)
+        if not hotel_with_tours['tours']:
+            raise ValueError("Туры не найдены")
+        
+        best_tour = hotel_with_tours['tours'][0]
+        hotel_info = hotel_with_tours['hotel_info']
+        
+        # Создаем объект FoundTourInfo для обратной совместимости
+        found_tour_info = FoundTourInfo(
+            # Информация об отеле
+            hotel_id=hotel_info['hotel_id'],
+            hotel_name=hotel_info['hotel_name'],
+            hotel_stars=hotel_info['hotel_stars'],
+            hotel_rating=hotel_info['hotel_rating'],
+            hotel_description=hotel_info['hotel_description'],
+            hotel_picture=hotel_info['hotel_picture'],
+            hotel_review_link=hotel_info['hotel_review_link'],
+            country_name=hotel_info['country_name'],
+            region_name=hotel_info['region_name'],
+            sea_distance=hotel_info['sea_distance'],
+            
+            # Информация о туре
+            tour_id=best_tour['tour_id'],
+            operator_name=best_tour['operator_name'],
+            fly_date=best_tour['fly_date'],
+            nights=best_tour['nights'],
+            price=best_tour['price'],
+            fuel_charge=best_tour['fuel_charge'],
+            meal=best_tour['meal'],
+            room_type=best_tour['room_type'],
+            adults=best_tour['adults'],
+            children=best_tour['children'],
+            currency=best_tour['currency'],
+            tour_link=best_tour['tour_link'],
+            
+            # Дополнительная информация
+            is_regular=best_tour['is_regular'],
+            is_promo=best_tour['is_promo'],
+            is_on_request=best_tour['is_on_request'],
+            flight_status=best_tour['flight_status'],
+            hotel_status=best_tour['hotel_status'],
+            search_results_count=hotel_with_tours['search_results_count'],
+            hotels_found=1,  # Один отель
+            is_fallback=hotel_with_tours['is_fallback'],
+            fallback_strategy=hotel_with_tours['fallback_strategy']
+        )
+        
+        return found_tour_info
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка поиска лучшего тура: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+# Также обновляем POST endpoint
+@router.post("/find-tour", response_model=HotelWithToursCompleteResponse)
+async def find_tour_post(search_request: SpecificTourSearchRequest):
+    """
+    Поиск отеля со всеми турами через POST запрос с телом
+    
+    Пример тела запроса:
+    {
+        "departure": 1,
+        "country": 4,
+        "hotel_stars": 4,
+        "meal_type": 2,
+        "nights": 7,
+        "adults": 2,
+        "max_price": 80000
+    }
+    """
+    try:
+        hotel_with_tours = await specific_tour_service.find_specific_tour(search_request)
+        return HotelWithToursCompleteResponse(**hotel_with_tours)
+    except Exception as e:
+        logger.error(f"❌ Ошибка POST поиска отеля с турами: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def find_best_tour(
+    departure: int = Query(..., description="Код города вылета"),
+    country: int = Query(..., description="Код страны"),
+    hotel_stars: Optional[int] = Query(None, ge=1, le=5, description="Звездность отеля"),
+    hotel_name: Optional[str] = Query(None, min_length=3, description="Название отеля"),
+    hotel_id: Optional[str] = Query(None, description="ID отеля"),
+    region_code: Optional[int] = Query(None, description="Код курорта"),
+    nights: Optional[int] = Query(None, ge=1, le=30, description="Количество ночей"),
+    adults: int = Query(2, ge=1, le=8, description="Количество взрослых"),
+    children: int = Query(0, ge=0, le=4, description="Количество детей"),
+    meal_type: Optional[int] = Query(None, description="Тип питания (код)"),
+    max_price: Optional[int] = Query(None, gt=0, description="Максимальная цена"),
+    min_price: Optional[int] = Query(None, gt=0, description="Минимальная цена"),
+    date_from: Optional[str] = Query(None, description="Дата от (дд.мм.гггг)"),
+    date_to: Optional[str] = Query(None, description="Дата до (дд.мм.гггг)"),
+    rating: Optional[float] = Query(None, ge=1.0, le=5.0, description="Минимальный рейтинг отеля"),
+    hotel_type: Optional[str] = Query(None, description="Тип отеля: beach,city,family,deluxe,etc"),
+):
+    """
+    Поиск ОДНОГО лучшего тура (для обратной совместимости)
+    
+    Возвращает информацию только о самом подходящем туре.
+    """
+    try:
+        # Создаем объект запроса
+        search_request = SpecificTourSearchRequest(
+            departure=departure,
+            country=country,
+            hotel_stars=hotel_stars,
+            hotel_name=hotel_name,
+            hotel_id=hotel_id,
+            region_code=region_code,
+            nights=nights,
+            adults=adults,
+            children=children,
+            meal_type=meal_type,
+            max_price=max_price,
+            min_price=min_price,
+            date_from=date_from,
+            date_to=date_to,
+            rating=rating,
+            hotel_type=hotel_type
+        )
+        
+        # Получаем отель со всеми турами
+        hotel_with_tours = await specific_tour_service.find_specific_tour(search_request)
+        
+        # Берем самый дешевый тур (первый в отсортированном списке)
+        if not hotel_with_tours['tours']:
+            raise ValueError("Туры не найдены")
+        
+        best_tour = hotel_with_tours['tours'][0]
+        hotel_info = hotel_with_tours['hotel_info']
+        
+        # Создаем объект FoundTourInfo для обратной совместимости
+        found_tour_info = FoundTourInfo(
+            # Информация об отеле
+            hotel_id=hotel_info['hotel_id'],
+            hotel_name=hotel_info['hotel_name'],
+            hotel_stars=hotel_info['hotel_stars'],
+            hotel_rating=hotel_info['hotel_rating'],
+            hotel_description=hotel_info['hotel_description'],
+            hotel_picture=hotel_info['hotel_picture'],
+            hotel_review_link=hotel_info['hotel_review_link'],
+            country_name=hotel_info['country_name'],
+            region_name=hotel_info['region_name'],
+            sea_distance=hotel_info['sea_distance'],
+            
+            # Информация о туре
+            tour_id=best_tour['tour_id'],
+            operator_name=best_tour['operator_name'],
+            fly_date=best_tour['fly_date'],
+            nights=best_tour['nights'],
+            price=best_tour['price'],
+            fuel_charge=best_tour['fuel_charge'],
+            meal=best_tour['meal'],
+            room_type=best_tour['room_type'],
+            adults=best_tour['adults'],
+            children=best_tour['children'],
+            currency=best_tour['currency'],
+            tour_link=best_tour['tour_link'],
+            
+            # Дополнительная информация
+            is_regular=best_tour['is_regular'],
+            is_promo=best_tour['is_promo'],
+            is_on_request=best_tour['is_on_request'],
+            flight_status=best_tour['flight_status'],
+            hotel_status=best_tour['hotel_status'],
+            search_results_count=hotel_with_tours['search_results_count'],
+            hotels_found=1,  # Один отель
+            is_fallback=hotel_with_tours['is_fallback'],
+            fallback_strategy=hotel_with_tours['fallback_strategy']
+        )
+        
+        return found_tour_info
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка поиска лучшего тура: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 @router.get("/find-tour/by-hotel", response_model=FoundTourInfo)
 async def find_tour_by_hotel(
     hotel_name: str = Query(..., min_length=3, description="Название отеля"),
@@ -799,6 +1060,36 @@ async def find_tour_post(search_request: SpecificTourSearchRequest):
     except Exception as e:
         logger.error(f"❌ Ошибка POST поиска тура: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/find-tour/clear-cache")
+async def clear_specific_tour_cache():
+    """
+    Очистка кэша specific_tour_service
+    """
+    try:
+        # Очищаем кэш с префиксом specific_tour
+        from app.services.cache_service import cache_service
+        
+        # Получаем все ключи кэша
+        redis_client = cache_service.redis
+        keys = await redis_client.keys("specific_tour*")
+        
+        if keys:
+            await redis_client.delete(*keys)
+            logger.info(f"🗑️ Очищено {len(keys)} ключей кэша specific_tour")
+        
+        return {
+            "success": True,
+            "message": f"Очищено {len(keys)} ключей кэша",
+            "cleared_keys": len(keys)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка очистки кэша: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 # ========== ИНФОРМАЦИОННЫЕ ENDPOINTS ==========
 

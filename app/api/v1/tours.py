@@ -1059,7 +1059,10 @@ async def debug_hotel_search(country_code: int, hotel_name: str):
             "search_query": hotel_name,
             "country_code": country_code
         }
-@router.get("/find-tour/by-hotel", response_model=FoundTourInfo)
+# В файле app/api/v1/tours.py
+# Замените endpoint find_tour_by_hotel:
+
+@router.get("/find-tour/by-hotel")  # УБИРАЕМ response_model=FoundTourInfo
 async def find_tour_by_hotel(
     hotel_name: str = Query(..., min_length=3, description="Название отеля"),
     departure: int = Query(..., description="Код города вылета"),
@@ -1075,16 +1078,71 @@ async def find_tour_by_hotel(
     try:
         logger.info(f"🔎 Поиск тура по отелю '{hotel_name}' в стране {country}")
         
-        found_tour = await specific_tour_service.find_tour_by_hotel_name(
-            hotel_name=hotel_name,
+        # Создаем объект запроса
+        search_request = SpecificTourSearchRequest(
             departure=departure,
             country=country,
+            hotel_name=hotel_name,
             nights=nights,
-            adults=adults
+            adults=adults,
+            children=0
         )
         
-        logger.info(f"✅ Найден тур по отелю: {found_tour.hotel_name}")
-        return found_tour
+        # Получаем отель со всеми турами (словарь)
+        hotel_with_tours = await specific_tour_service.find_specific_tour(search_request)
+        
+        if not hotel_with_tours or not hotel_with_tours.get('tours'):
+            raise ValueError("Туры не найдены")
+        
+        # Берем лучший тур (первый в отсортированном списке)
+        best_tour = hotel_with_tours['tours'][0]
+        hotel_info = hotel_with_tours['hotel_info']
+        
+        logger.info(f"✅ Найден тур: {hotel_info.get('hotel_name', 'Unknown')} - {best_tour.get('price', 0)} руб.")
+        
+        # Возвращаем обычный JSON словарь - БЕЗ Pydantic валидации
+        return {
+            # Информация об отеле
+            "hotel_id": hotel_info.get('hotel_id'),
+            "hotel_name": hotel_info.get('hotel_name'),
+            "hotel_stars": hotel_info.get('hotel_stars'),
+            "hotel_rating": hotel_info.get('hotel_rating'),
+            "hotel_description": hotel_info.get('hotel_description'),
+            "hotel_picture": hotel_info.get('hotel_picture'),
+            "hotel_review_link": hotel_info.get('hotel_review_link'),
+            "country_name": hotel_info.get('country_name'),
+            "region_name": hotel_info.get('region_name'),
+            "sea_distance": hotel_info.get('sea_distance'),
+            
+            # Информация о туре
+            "tour_id": best_tour.get('tour_id'),
+            "operator_name": best_tour.get('operator_name'),
+            "fly_date": best_tour.get('fly_date'),
+            "nights": best_tour.get('nights'),
+            "price": best_tour.get('price'),
+            "fuel_charge": best_tour.get('fuel_charge'),
+            "meal": best_tour.get('meal'),
+            "room_type": best_tour.get('room_type'),
+            "adults": best_tour.get('adults'),
+            "children": best_tour.get('children'),
+            "currency": best_tour.get('currency'),
+            "tour_link": best_tour.get('tour_link'),
+            
+            # Дополнительная информация
+            "is_regular": best_tour.get('is_regular', False),
+            "is_promo": best_tour.get('is_promo', False),
+            "is_on_request": best_tour.get('is_on_request', False),
+            "flight_status": best_tour.get('flight_status'),
+            "hotel_status": best_tour.get('hotel_status'),
+            "search_results_count": hotel_with_tours.get('search_results_count', 1),
+            "hotels_found": hotel_with_tours.get('hotels_found', 1),
+            "is_fallback": hotel_with_tours.get('is_fallback', False),
+            "fallback_strategy": hotel_with_tours.get('fallback_strategy'),
+            
+            # Статус успеха
+            "success": True,
+            "message": f"Найден тур в отель {hotel_info.get('hotel_name')} за {best_tour.get('price')} руб."
+        }
         
     except HTTPException:
         # Пропускаем уже обработанные HTTP ошибки
@@ -1094,32 +1152,31 @@ async def find_tour_by_hotel(
         # Обрабатываем случай "тур не найден" как 404
         logger.warning(f"❌ Тур по отелю '{hotel_name}' не найден: {e}")
         
-        # Создаем объект запроса для получения предложений
-        search_request = SpecificTourSearchRequest(
-            departure=departure,
-            country=country,
-            hotel_name=hotel_name,
-            nights=nights,
-            adults=adults,
-            children=0  # По умолчанию
-        )
-        
-        suggestions = specific_tour_service.get_search_suggestions(search_request)
-        
         raise HTTPException(
             status_code=404,
-            detail=TourSearchError(
-                error="Отель с турами не найден",
-                message="По заданным критериям отели с турами не найдены",
-                suggestions=suggestions
-            ).dict()
+            detail={
+                "error": "Отель с турами не найден",
+                "message": "По заданным критериям отели с турами не найдены",
+                "suggestions": [
+                    "Попробуйте изменить даты поездки",
+                    "Рассмотрите другие курорты в этой стране",
+                    f"Попробуйте поиск по части названия отеля: '{hotel_name[:4]}'"
+                ],
+                "success": False
+            }
         )
         
     except Exception as e:
         # Только настоящие системные ошибки
         logger.error(f"❌ Системная ошибка поиска по отелю '{hotel_name}': {e}")
-        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
-
+        raise HTTPException(
+            status_code=500, 
+            detail={
+                "error": "Внутренняя ошибка сервера",
+                "message": str(e),
+                "success": False
+            }
+        )
 # Дополнительно: улучшенная функция поиска с отладкой
 @router.get("/find-tour/by-hotel/debug")
 async def debug_hotel_search(

@@ -982,6 +982,83 @@ async def find_best_tour(
     except Exception as e:
         logger.error(f"❌ Ошибка поиска лучшего тура: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+# Добавьте этот endpoint в tours.py
+# Добавьте этот endpoint в tours.py
+# Добавьте этот endpoint в tours.py
+
+@router.get("/debug/hotels/{country_code}")
+async def debug_hotels_in_country(country_code: int):
+    """Отладочный endpoint для проверки отелей в стране"""
+    try:
+        logger.info(f"🔍 Отладка: получаем отели для страны {country_code}")
+        
+        # Прямой запрос к TourVisor
+        hotels_data = await tourvisor_client.get_references(
+            "hotel",
+            hotcountry=country_code
+        )
+        
+        hotels = hotels_data.get("hotel", [])
+        if not isinstance(hotels, list):
+            hotels = [hotels] if hotels else []
+        
+        # Ищем отели с "EDEN" в названии
+        eden_hotels = []
+        for hotel in hotels:
+            hotel_name = hotel.get("name", "")
+            if "eden" in hotel_name.lower():
+                eden_hotels.append({
+                    "id": hotel.get("id"),
+                    "name": hotel_name,
+                    "stars": hotel.get("stars"),
+                    "region": hotel.get("regionname", "")
+                })
+        
+        return {
+            "country_code": country_code,
+            "total_hotels": len(hotels),
+            "eden_hotels": eden_hotels,
+            "sample_hotels": [
+                {
+                    "id": h.get("id"),
+                    "name": h.get("name", ""),
+                    "stars": h.get("stars")
+                } 
+                for h in hotels[:10]
+            ],
+            "raw_response_keys": list(hotels_data.keys()) if hotels_data else [],
+            "first_hotel_keys": list(hotels[0].keys()) if hotels else [],
+            "raw_response": hotels_data,  # Добавляем полный ответ для отладки
+            "lists_content": hotels_data.get("lists") if hotels_data else None
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отладки: {e}")
+        return {
+            "error": str(e),
+            "country_code": country_code
+        }
+
+@router.get("/debug/hotel-search/{country_code}/{hotel_name}")
+async def debug_hotel_search(country_code: int, hotel_name: str):
+    """Отладка поиска конкретного отеля"""
+    try:
+        # Используем вашу функцию поиска
+        hotel_id = await specific_tour_service._find_hotel_id_by_name(hotel_name, country_code)
+        
+        return {
+            "search_query": hotel_name,
+            "country_code": country_code,
+            "found_hotel_id": hotel_id,
+            "success": hotel_id is not None
+        }
+        
+    except Exception as e:
+        return {
+            "error": str(e),
+            "search_query": hotel_name,
+            "country_code": country_code
+        }
 @router.get("/find-tour/by-hotel", response_model=FoundTourInfo)
 async def find_tour_by_hotel(
     hotel_name: str = Query(..., min_length=3, description="Название отеля"),
@@ -996,6 +1073,8 @@ async def find_tour_by_hotel(
     Пример: /find-tour/by-hotel?hotel_name=hilton&departure=1&country=4&nights=7
     """
     try:
+        logger.info(f"🔎 Поиск тура по отелю '{hotel_name}' в стране {country}")
+        
         found_tour = await specific_tour_service.find_tour_by_hotel_name(
             hotel_name=hotel_name,
             departure=departure,
@@ -1003,11 +1082,100 @@ async def find_tour_by_hotel(
             nights=nights,
             adults=adults
         )
+        
+        logger.info(f"✅ Найден тур по отелю: {found_tour.hotel_name}")
         return found_tour
+        
+    except HTTPException:
+        # Пропускаем уже обработанные HTTP ошибки
+        raise
+        
+    except ValueError as e:
+        # Обрабатываем случай "тур не найден" как 404
+        logger.warning(f"❌ Тур по отелю '{hotel_name}' не найден: {e}")
+        
+        # Создаем объект запроса для получения предложений
+        search_request = SpecificTourSearchRequest(
+            departure=departure,
+            country=country,
+            hotel_name=hotel_name,
+            nights=nights,
+            adults=adults,
+            children=0  # По умолчанию
+        )
+        
+        suggestions = specific_tour_service.get_search_suggestions(search_request)
+        
+        raise HTTPException(
+            status_code=404,
+            detail=TourSearchError(
+                error="Отель с турами не найден",
+                message="По заданным критериям отели с турами не найдены",
+                suggestions=suggestions
+            ).dict()
+        )
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка поиска по отелю: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Только настоящие системные ошибки
+        logger.error(f"❌ Системная ошибка поиска по отелю '{hotel_name}': {e}")
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
 
+# Дополнительно: улучшенная функция поиска с отладкой
+@router.get("/find-tour/by-hotel/debug")
+async def debug_hotel_search(
+    hotel_name: str = Query(..., min_length=3, description="Название отеля"),
+    country: int = Query(..., description="Код страны"),
+):
+    """
+    Отладочная информация о поиске отеля
+    """
+    try:
+        # Получаем список отелей страны
+        hotels_data = await tourvisor_client.get_references(
+            "hotel", 
+            hotcountry=country
+        )
+        
+        hotels = hotels_data.get("hotel", [])
+        if not isinstance(hotels, list):
+            hotels = [hotels] if hotels else []
+        
+        # Ищем совпадения
+        search_name = hotel_name.lower()
+        exact_matches = []
+        partial_matches = []
+        
+        for hotel in hotels:
+            hotel_api_name = hotel.get("name", "")
+            hotel_id = hotel.get("id")
+            
+            if not hotel_api_name:
+                continue
+                
+            hotel_name_lower = hotel_api_name.lower()
+            
+            if search_name == hotel_name_lower:
+                exact_matches.append({"id": hotel_id, "name": hotel_api_name})
+            elif search_name in hotel_name_lower or hotel_name_lower.startswith(search_name):
+                partial_matches.append({"id": hotel_id, "name": hotel_api_name})
+        
+        return {
+            "search_query": hotel_name,
+            "country_code": country,
+            "total_hotels_in_country": len(hotels),
+            "exact_matches": exact_matches,
+            "partial_matches": partial_matches[:10],  # Топ 10
+            "sample_hotels": [h.get("name", "") for h in hotels[:20]],  # Примеры
+            "search_tips": [
+                f"Попробуйте поиск по части названия: '{hotel_name[:4]}'",
+                "Проверьте правильность написания",
+                "Используйте основной endpoint /find-tour без hotel_name для поиска в стране"
+            ]
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отладки поиска отеля: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 @router.get("/find-tour/by-criteria", response_model=FoundTourInfo)
 async def find_tour_by_criteria(
     departure: int = Query(..., description="Код города вылета"),

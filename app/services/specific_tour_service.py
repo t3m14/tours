@@ -687,44 +687,61 @@ class SpecificTourService:
             params["pricefrom"] = search_request.min_price
         
         return params
-    
-    async def _find_hotel_id_by_name(self, hotel_name: str, country_code: int) -> Optional[str]:
-        """Поиск ID отеля по названию"""
-        try:
-            logger.info(f"🔍 Поиск отеля '{hotel_name}' в стране {country_code}")
-            
-            # Получаем список отелей для страны
-            hotels_data = await tourvisor_client.get_references("hotel", {
-                "hotcountry": country_code
-            })
-            
+async def _find_hotel_id_by_name(self, hotel_name: str, country_code: int) -> Optional[str]:
+    """Поиск ID отеля по названию - ИСПРАВЛЕНО!"""
+    try:
+        logger.info(f"🔍 Поиск отеля '{hotel_name}' в стране {country_code}")
+        
+        # Получаем список отелей для страны
+        hotels_data = await tourvisor_client.get_references(
+            "hotel",
+            hotcountry=country_code
+        )
+        
+        # ИСПРАВЛЕНИЕ: отели находятся в другой структуре!
+        hotels = []
+        if "lists" in hotels_data and "hotels" in hotels_data["lists"]:
+            hotels = hotels_data["lists"]["hotels"].get("hotel", [])
+        else:
+            # Fallback к старой структуре
             hotels = hotels_data.get("hotel", [])
-            if not isinstance(hotels, list):
-                hotels = [hotels] if hotels else []
-            
-            # Ищем отель по имени (частичное совпадение)
-            search_name = hotel_name.lower()
-            
-            # Сначала пытаемся найти точное совпадение
-            for hotel in hotels:
-                hotel_name_full = hotel.get("name", "").lower()
-                if search_name == hotel_name_full:
-                    return hotel.get("id")
-            
-            # Затем ищем частичное совпадение
-            for hotel in hotels:
-                hotel_name_full = hotel.get("name", "").lower()
-                if search_name in hotel_name_full or hotel_name_full in search_name:
-                    logger.info(f"✅ Найден отель: {hotel.get('name')} (ID: {hotel.get('id')})")
-                    return hotel.get("id")
-            
-            logger.warning(f"❌ Отель '{hotel_name}' не найден")
+        
+        if not isinstance(hotels, list):
+            hotels = [hotels] if hotels else []
+        
+        logger.info(f"📊 Найдено {len(hotels)} отелей в стране {country_code}")
+        
+        # Показываем первые 5 отелей для отладки
+        if hotels:
+            sample_names = [h.get("name", "NO_NAME") for h in hotels[:5]]
+            logger.info(f"📝 Примеры отелей: {sample_names}")
+        else:
+            logger.warning(f"❌ Нет отелей для страны {country_code}!")
             return None
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка поиска отеля: {e}")
-            return None
-    
+        
+        # Ищем отель по имени (частичное совпадение)
+        search_name = hotel_name.lower()
+        
+        # Сначала пытаемся найти точное совпадение
+        for hotel in hotels:
+            hotel_name_full = hotel.get("name", "").lower()
+            if search_name == hotel_name_full:
+                logger.info(f"✅ Точное совпадение: {hotel.get('name')} (ID: {hotel.get('id')})")
+                return hotel.get("id")
+        
+        # Затем ищем частичное совпадение
+        for hotel in hotels:
+            hotel_name_full = hotel.get("name", "").lower()
+            if search_name in hotel_name_full or hotel_name_full in search_name:
+                logger.info(f"✅ Частичное совпадение: {hotel.get('name')} (ID: {hotel.get('id')})")
+                return hotel.get("id")
+        
+        logger.warning(f"❌ Отель '{hotel_name}' не найден среди {len(hotels)} отелей")
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка поиска отеля: {e}")
+        return None
     def _generate_cache_key(self, search_request: SpecificTourSearchRequest) -> str:
         """Генерация ключа кэша"""
         key_parts = [

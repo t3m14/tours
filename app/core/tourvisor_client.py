@@ -38,7 +38,7 @@ class TourVisorClient:
         for attempt in range(max_retries):
             try:
                 return await self._make_request(endpoint, params)
-            except Exception as e:
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, Exception) as e:
                 last_error = e
                 if attempt < max_retries - 1:
                     wait_time = 2 ** attempt  # Экспоненциальная задержка
@@ -757,7 +757,7 @@ class TourVisorClient:
                 logger.warning(f"⚠️ Нет блока 'result' в ответе для {request_id}")
         else:
             logger.warning(f"⚠️ Нет блока 'data' в ответе результатов для {request_id}")
-    
+
     async def continue_search(self, request_id: str) -> Dict[str, Any]:
         """Продолжение поиска для получения больше результатов"""
         params = {
@@ -767,14 +767,16 @@ class TourVisorClient:
         
         return await self._make_request("search.php", params)
     
-    async def get_hot_tours(self, city: int, items: int = 10, **filters) -> Dict[str, Any]:
-        """Получение горящих туров"""
+    async def get_hot_tours(self, city: int, items: int = 10, countries: str = None, **filters) -> Dict[str, Any]:
         params = {
             "city": city,
             "items": items,
             "format": "json",
             **filters
         }
+        
+        if countries:
+            params["countries"] = countries
         
         try:
             result = await self._make_request_with_retry("hottours.php", params)
@@ -785,9 +787,8 @@ class TourVisorClient:
             
             return result
             
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, Exception) as e:
             logger.warning(f"⚠️ Ошибка получения горящих туров для города {city}: {e}")
-            # Возвращаем пустой результат вместо ошибки
             return {"hotcount": 0, "hottours": []}
     
     async def get_references(self, ref_type: str, **filters) -> Dict[str, Any]:

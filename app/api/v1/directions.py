@@ -1,13 +1,12 @@
 # app/api/v1/directions.py
-
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Dict, Any, Optional
-import logging
-
 from app.services.directions_service import directions_service
+from app.services.cache_service import cache_service  # ← ДОБАВИТЬ ЭТУ СТРОКУ
+from app.utils.logger import setup_logger
 
+logger = setup_logger(__name__)
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
 @router.get("/countries/list")
 async def get_supported_countries():
@@ -259,3 +258,187 @@ async def test_country_directions_by_id(country_id: int):
             "country_id": country_id,
             "status": "error"
         }
+# Добавить в app/api/v1/directions.py
+
+@router.delete("/cache/clear")
+async def clear_directions_cache():
+    """
+    Очистка кэша направлений
+    
+    Удаляет все закэшированные данные направлений для всех стран.
+    Полезно для принудительного обновления данных.
+    """
+    try:
+        logger.info("🗑️ Запрос на очистку кэша направлений")
+        
+        # Получаем все ключи кэша связанные с направлениями
+        cache_patterns = [
+            "directions_with_prices_country_*",  # Кэш с ценами по странам
+            "directions_country_*",              # Обычный кэш направлений
+            "top_cities_country_*",              # Кэш городов
+            "regions_*",                         # Кэш регионов
+        ]
+        
+        total_deleted = 0
+        deleted_by_pattern = {}
+        
+        for pattern in cache_patterns:
+            try:
+                # Получаем все ключи по паттерну
+                keys = await cache_service.get_keys_pattern(pattern)
+                
+                if keys:
+                    # Удаляем все найденные ключи
+                    for key in keys:
+                        await cache_service.delete(key)
+                    
+                    deleted_by_pattern[pattern] = len(keys)
+                    total_deleted += len(keys)
+                    logger.info(f"🗑️ Удалено {len(keys)} ключей по паттерну: {pattern}")
+                else:
+                    deleted_by_pattern[pattern] = 0
+                    logger.info(f"🔍 Нет ключей для паттерна: {pattern}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка очистки паттерна {pattern}: {e}")
+                deleted_by_pattern[pattern] = f"error: {str(e)}"
+        
+        logger.info(f"✅ Всего удалено {total_deleted} ключей кэша направлений")
+        
+        return {
+            "success": True,
+            "message": f"Кэш направлений очищен успешно",
+            "total_deleted": total_deleted,
+            "details": deleted_by_pattern,
+            "next_actions": [
+                "Следующие запросы к /directions будут генерировать новые данные",
+                "Кэш будет постепенно заполняться при новых запросах"
+            ]
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка очистки кэша направлений: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Ошибка при очистке кэша: {str(e)}"
+        )
+
+@router.get("/cache/status")
+async def get_cache_status():
+    """
+    Получение статуса кэша направлений
+    
+    Показывает какие данные закэшированы и когда истекает срок действия.
+    """
+    try:
+        logger.info("📊 Запрос статуса кэша направлений")
+        
+        cache_patterns = [
+            "directions_with_prices_country_*",
+            "directions_country_*", 
+            "top_cities_country_*",
+            "regions_*"
+        ]
+        
+        cache_status = {}
+        total_keys = 0
+        
+        for pattern in cache_patterns:
+            try:
+                keys = await cache_service.get_keys_pattern(pattern)
+                
+                if keys:
+                    pattern_info = {
+                        "count": len(keys),
+                        "keys": keys[:10],  # Показываем первые 10 ключей
+                        "has_more": len(keys) > 10
+                    }
+                    
+                    # Пробуем получить TTL для первого ключа
+                    if keys:
+                        try:
+                            ttl = await cache_service.get_ttl(keys[0])
+                            if ttl:
+                                pattern_info["example_ttl_seconds"] = ttl
+                        except:
+                            pass
+                else:
+                    pattern_info = {
+                        "count": 0,
+                        "keys": [],
+                        "has_more": False
+                    }
+                
+                cache_status[pattern] = pattern_info
+                total_keys += pattern_info["count"]
+                
+            except Exception as e:
+                cache_status[pattern] = {
+                    "error": str(e),
+                    "count": 0
+                }
+        
+        return {
+            "total_cached_keys": total_keys,
+            "cache_patterns": cache_status,
+            "recommendations": {
+                "clear_cache": "POST /api/v1/directions/cache/clear",
+                "force_refresh": "Добавьте параметр ?force_refresh=true к любому запросу направлений"
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения статуса кэша: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка при получении статуса кэша: {str(e)}"
+        )
+
+@router.post("/refresh/{country_id}")
+async def force_refresh_country_directions(country_id: int):
+    """
+    Принудительное обновление направлений для конкретной страны
+    
+    Очищает кэш и генерирует новые данные для указанной страны.
+    """
+    try:
+        logger.info(f"🔄 Принудительное обновление направлений для страны {country_id}")
+        
+        # Находим название страны
+        country_name = None
+        for name, info in directions_service.COUNTRIES_MAPPING.items():
+            if info["country_id"] == country_id:
+                country_name = name
+                break
+        
+        if not country_name:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Страна с ID {country_id} не найдена"
+            )
+        
+        # Очищаем кэш для этой страны
+        cache_key = f"directions_with_prices_country_{country_id}"
+        await cache_service.delete(cache_key)
+        logger.info(f"🗑️ Очищен кэш для страны {country_name}")
+        
+        # Генерируем новые данные
+        directions = await directions_service.get_directions_by_country(country_name)
+        
+        return {
+            "success": True,
+            "country_name": country_name,
+            "country_id": country_id,
+            "directions_count": len(directions),
+            "message": f"Направления для {country_name} успешно обновлены",
+            "directions": directions[:3]  # Показываем первые 3 для примера
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Ошибка обновления страны {country_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка при обновлении: {str(e)}"
+        )

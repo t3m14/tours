@@ -143,76 +143,116 @@ class DirectionsService:
         """
         Получение топ-N туристических городов для страны через API
         
+        ГАРАНТИРУЕТ возврат ровно limit городов за счет комбинации:
+        1. Реальные регионы из API
+        2. Fallback регионы через отели  
+        3. Синтетические города из предустановленного списка
+        
         Args:
             country_id: ID страны
-            limit: Максимальное количество городов (по умолчанию 12)
+            limit: Точное количество городов для возврата (по умолчанию 12)
             
         Returns:
-            List[Dict]: Список топ городов
+            List[Dict]: Список из ровно limit городов
         """
         try:
-            logger.info(f"🌆 Запрашиваем топ-{limit} городов для country_id: {country_id}")
+            logger.info(f"🌆 Запрашиваем точно {limit} городов для country_id: {country_id}")
             
-            # Используем правильный справочник "region" с параметром regcountry
-            regions_data = await tourvisor_client.get_references(
-                "region", 
-                regcountry=country_id
-            )
+            final_cities = []
             
-            logger.debug(f"📄 Получен ответ API для страны {country_id}")
+            # ШАГ 1: Получаем реальные регионы из API
+            try:
+                regions_data = await tourvisor_client.get_references(
+                    "region", 
+                    regcountry=country_id
+                )
+                
+                logger.debug(f"📄 Получен ответ API для страны {country_id}")
+                
+                # Извлекаем регионы
+                regions = regions_data.get("lists", {}).get("regions", {}).get("region", [])
+                if not isinstance(regions, list):
+                    regions = [regions] if regions else []
+                
+                logger.info(f"🗂️ Извлечено {len(regions)} регионов из ответа API")
+                
+                # Фильтруем валидные регионы
+                valid_regions = []
+                for region in regions:
+                    region_country = region.get("country")
+                    if region_country and str(region_country) == str(country_id):
+                        valid_regions.append(region)
+                    else:
+                        logger.debug(f"⚠️ Пропускаем регион {region.get('name')} - принадлежит стране {region_country}, а не {country_id}")
+                
+                logger.info(f"✅ Валидных регионов из API: {len(valid_regions)}")
+                final_cities.extend(valid_regions)
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка получения регионов из API: {e}")
             
-            # Исправляем путь к данным - они находятся в lists.regions.region
-            regions = regions_data.get("lists", {}).get("regions", {}).get("region", [])
-            if not isinstance(regions, list):
-                regions = [regions] if regions else []
+            # ШАГ 2: Если не хватает, добавляем fallback регионы через отели
+            if len(final_cities) < limit:
+                needed = limit - len(final_cities)
+                logger.warning(f"⚠️ Нужно еще {needed} городов, пробуем fallback через отели")
+                
+                try:
+                    fallback_regions = await self._get_fallback_regions(country_id, needed)
+                    if fallback_regions:
+                        # Убираем дубликаты по ID
+                        seen_ids = {city.get("id") for city in final_cities}
+                        for region in fallback_regions:
+                            if region.get("id") not in seen_ids and len(final_cities) < limit:
+                                final_cities.append(region)
+                                seen_ids.add(region.get("id"))
+                        
+                        logger.info(f"🔄 Добавлено {len(final_cities) - len(valid_regions)} fallback регионов")
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка получения fallback регионов: {e}")
             
-            logger.info(f"🗂️ Извлечено {len(regions)} регионов из ответа API")
+            # ШАГ 3: Если все еще не хватает, добавляем синтетические города
+            if len(final_cities) < limit:
+                needed = limit - len(final_cities)
+                logger.warning(f"⚠️ Все еще нужно {needed} городов, добавляем синтетические")
+                
+                synthetic_cities = self._create_synthetic_cities(country_id, needed)
+                final_cities.extend(synthetic_cities)
+                
+                logger.info(f"🏗️ Добавлено {len(synthetic_cities)} синтетических городов")
             
-            # Проверяем что регионы принадлежат правильной стране
-            valid_regions = []
-            for region in regions:
-                region_country = region.get("country")
-                if region_country and str(region_country) == str(country_id):
-                    valid_regions.append(region)
-                else:
-                    logger.warning(f"⚠️ Пропускаем регион {region.get('name')} - принадлежит стране {region_country}, а не {country_id}")
+            # ШАГ 4: ГАРАНТИРУЕМ точное количество
+            final_cities = final_cities[:limit]
             
-            logger.info(f"✅ Валидных регионов: {len(valid_regions)} из {len(regions)}")
+            # Если каким-то образом все еще мало (не должно быть), дополняем
+            while len(final_cities) < limit:
+                final_cities.append({
+                    "id": f"emergency_{country_id}_{len(final_cities)}",
+                    "name": f"Город {len(final_cities) + 1}",
+                    "country": str(country_id),
+                    "synthetic": True,
+                    "emergency": True
+                })
             
-            # Если недостаточно регионов, попробуем fallback
-            if len(valid_regions) < limit:
-                logger.warning(f"⚠️ Недостаточно регионов ({len(valid_regions)} < {limit}), пробуем fallback")
-                fallback_regions = await self._get_fallback_regions(country_id, limit)
-                if fallback_regions:
-                    valid_regions.extend(fallback_regions)
-                    # Убираем дубликаты по ID
-                    seen_ids = set()
-                    unique_regions = []
-                    for region in valid_regions:
-                        region_id = region.get("id")
-                        if region_id not in seen_ids:
-                            seen_ids.add(region_id)
-                            unique_regions.append(region)
-                    valid_regions = unique_regions
+            # Логируем результат
+            real_count = len([c for c in final_cities if not c.get("synthetic", False)])
+            synthetic_count = len([c for c in final_cities if c.get("synthetic", False)])
             
-            # Ограничиваем до нужного количества
-            top_cities = valid_regions[:limit]
+            logger.info(f"🏁 ИТОГО: {len(final_cities)} городов (реальных: {real_count}, синтетических: {synthetic_count})")
             
-            # Если все еще мало, добавляем синтетические города
-            if len(top_cities) < limit:
-                logger.warning(f"⚠️ Все еще мало городов ({len(top_cities)} < {limit}), добавляем синтетические")
-                synthetic_cities = self._create_synthetic_cities(country_id, limit - len(top_cities))
-                top_cities.extend(synthetic_cities)
+            # Показываем первые 3 для отладки
+            for i, city in enumerate(final_cities[:3]):
+                city_type = "🎭" if city.get("synthetic") else "🏙️"
+                logger.debug(f"  {city_type} Город {i+1}: {city.get('name', 'Без названия')} (ID: {city.get('id', 'N/A')})")
             
-            for i, city in enumerate(top_cities[:3]):  # Показываем первые 3 для примера
-                logger.debug(f"  📍 Город {i+1}: {city.get('name', 'Без названия')} (ID: {city.get('id', 'N/A')})")
+            if len(final_cities) != limit:
+                logger.error(f"🚨 КРИТИЧЕСКАЯ ОШИБКА: Возвращаем {len(final_cities)} городов вместо {limit}!")
             
-            logger.info(f"🏁 Итого городов: {len(top_cities)}")
-            return top_cities
+            return final_cities
             
         except Exception as e:
-            logger.error(f"❌ Ошибка получения городов для страны {country_id}: {e}")
-            # В случае ошибки возвращаем синтетические города
+            logger.error(f"❌ Критическая ошибка получения городов для страны {country_id}: {e}")
+            logger.info(f"🎭 Возвращаем {limit} синтетических городов как fallback")
+            # В случае критической ошибки возвращаем только синтетические города
             return self._create_synthetic_cities(country_id, limit)
 
     async def _get_fallback_regions(self, country_id: int, limit: int) -> List[Dict[str, Any]]:
@@ -401,7 +441,10 @@ class DirectionsService:
                             elif price_val == 0:
                                 if hotels_found == 0 or tours_found == 0:
                                     logger.warning(f"🚫 Нет туров для {city_name}")
-                                    return None, None
+                                    # Возвращаем fallback вместо None, None
+                                    mock_price = self._generate_mock_price(country_id, city_name)
+                                    mock_image = self._generate_fallback_image_link(country_id, city_name)
+                                    return mock_price, mock_image
                                 else:
                                     logger.warning(f"⚠️ Цена 0 для {city_name}")
                                     price = None
@@ -428,14 +471,14 @@ class DirectionsService:
                     continue
             
             logger.warning(f"⏰ Таймаут поиска для {city_name} (20 сек)")
-            
+
             # Если реальная цена не найдена, генерируем мок
             mock_price = self._generate_mock_price(country_id, city_name)
-            mock_image = await self._get_fallback_image_for_region(country_id, region_id, city_name)
-            
+            mock_image = self._generate_fallback_image_link(country_id, city_name)  # ← ИЗМЕНЕНО
+
             if mock_price:
                 logger.info(f"🎭 Мок цена для {city_name}: {mock_price} руб.")
-            
+
             return mock_price, mock_image
             
         except Exception as e:
@@ -593,6 +636,95 @@ class DirectionsService:
         has_image_pattern = any(pattern in link_lower for pattern in ['image', 'img', 'pic', 'photo', 'hotel_pics'])
         
         return has_extension or has_image_pattern
+    
+    def _generate_mock_price(self, country_id: int, city_name: str) -> Optional[int]:
+        """
+        Генерация mock-цены на основе страны и города
+        
+        Args:
+            country_id: ID страны
+            city_name: Название города
+            
+        Returns:
+            Optional[int]: Mock-цена или None
+        """
+        import random
+        
+        try:
+            # Базовые цены по странам
+            base_prices = {
+                1: 45000,   # Египет
+                2: 85000,   # Таиланд  
+                3: 75000,   # Индия
+                4: 35000,   # Турция
+                8: 120000,  # Мальдивы
+                9: 85000,   # ОАЭ
+                10: 95000,  # Куба
+                12: 80000,  # Шри-Ланка
+                13: 65000,  # Китай
+                16: 75000,  # Вьетнам
+                40: 70000,  # Камбоджа
+                46: 25000,  # Абхазия
+                47: 20000,  # Россия
+            }
+            
+            base_price = base_prices.get(country_id, 50000)
+            
+            # Добавляем случайную вариацию ±25%
+            variation = random.randint(-25, 25) / 100
+            final_price = int(base_price * (1 + variation))
+            
+            # Округляем до сотен
+            final_price = round(final_price, -2)
+            
+            logger.info(f"🎭 Генерация mock-цены для {city_name}: {final_price} руб.")
+            return final_price
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка генерации mock-цены для {city_name}: {e}")
+            return None
 
+    def _generate_fallback_image_link(self, country_id: int, city_name: str) -> Optional[str]:
+        """Генерация заглушки картинки на основе страны и города - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+        
+        # Локальные картинки стран
+        country_fallback_images = {
+            1: "/static/mockup_images/egypt.jpg",        # Египет
+            2: "/static/mockup_images/thailand.webp",     # Таиланд  
+            3: "/static/mockup_images/india.webp",        # Индия
+            4: "/static/mockup_images/turkey.jpeg",       # Турция
+            8: "/static/mockup_images/maldives.jpg",      # Мальдивы
+            9: "/static/mockup_images/oae.jpg",           # ОАЭ
+            10: "/static/mockup_images/kuba.jpg",         # Куба
+            12: "/static/mockup_images/sri_lanka.jpg",    # Шри-Ланка
+            13: "/static/mockup_images/china.jpg",        # Китай
+            16: "/static/mockup_images/vietnam.jpg",      # Вьетнам
+            40: "/static/mockup_images/kambodja.jpg",     # Камбоджа
+            46: "/static/mockup_images/abkhazia.jpg",     # Абхазия
+            47: "/static/mockup_images/russia.webp",      # Россия
+        }
+        
+        # Возвращаем картинку страны
+        fallback = country_fallback_images.get(country_id)
+        if fallback:
+            # Проверяем что файл существует
+            import os
+            file_path = os.path.join(os.path.dirname(__file__), "mockup_images", os.path.basename(fallback))
+            if os.path.exists(file_path):
+                logger.info(f"🎨 Найдена fallback картинка для {city_name}: {fallback}")
+                return fallback
+            else:
+                logger.warning(f"⚠️ Файл fallback картинки не найден: {file_path}")
+        
+        # Общая заглушка если страна не найдена или файл отсутствует
+        default_fallback = "/static/mockup_images/default.jpg"
+        default_file_path = os.path.join(os.path.dirname(__file__), "mockup_images", "default.jpg")
+        
+        if os.path.exists(default_file_path):
+            logger.info(f"🎨 Используем общую fallback картинку для {city_name}: {default_fallback}")
+            return default_fallback
+        
+        logger.warning(f"❓ Нет fallback картинки для страны {country_id} и города {city_name}")
+        return None
 # Создаем единственный экземпляр сервиса
 directions_service = DirectionsService()

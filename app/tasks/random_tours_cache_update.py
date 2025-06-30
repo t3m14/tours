@@ -722,6 +722,32 @@ class RandomToursCacheUpdateService:
                 departure_city = get_city_name_by_code(tour.get("departurecode"))
             else:
                 departure_city = "Москва"  # Fallback
+
+           # Словарь склонений городов
+            declensions = {
+                "Москва": "из Москвы",
+                "Санкт-Петербург": "из Санкт-Петербурга", 
+                "Пермь": "из Перми",
+                "Саратов": "из Саратова",
+                "Екатеринбург": "из Екатеринбурга",
+                "Казань": "из Казани",
+                "Новосибирск": "из Новосибирска",
+                "Нижний Новгород": "из Нижнего Новгорода",
+                "Челябинск": "из Челябинска",
+                "Самара": "из Самары",
+                "Ростов-на-Дону": "из Ростова-на-Дону",
+                "Уфа": "из Уфы",
+                "Красноярск": "из Красноярска",
+                "Воронеж": "из Воронежа",
+                "Волгоград": "из Волгограда"
+            }
+            
+            # Приводим город к родительному падежу
+            if departure_city in declensions:
+                departure_city = declensions[departure_city]
+            elif not departure_city.startswith("из "):
+                departure_city = f"из {departure_city}"
+
             
             # ПРАВИЛЬНОЕ ПОЛУЧЕНИЕ seadistance
             # seadistance всегда находится в данных отеля, не тура

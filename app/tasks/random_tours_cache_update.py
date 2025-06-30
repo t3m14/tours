@@ -448,7 +448,7 @@ class RandomToursCacheUpdateService:
                     country_id = random.choice([int(c) for c in self.countries_to_update])
                     
                     hot_tours_data = await tourvisor_client.get_hot_tours(
-                        city=1,  # Москва
+                        city=1,  # Москвы
                         items=min(20, self.tours_per_type * 2),
                         countries=str(country_id)
                     )
@@ -692,12 +692,12 @@ class RandomToursCacheUpdateService:
             # Функция для получения названия города по коду
             def get_city_name_by_code(city_code):
                 if not city_code:
-                    return "Москва"
+                    return "Москвы"
                 
                 try:
                     city_code = int(city_code)
                 except (ValueError, TypeError):
-                    return "Москва"
+                    return "Москвы"
                 city_map = {
                     1: "из Москвы", 2: "из Перми", 3: "из Екатеринбурга", 4: "из Уфы",
                     5: "из Санкт-Петербурга", 6: "из Казани", 7: "из Нижнего Новгорода",
@@ -705,7 +705,7 @@ class RandomToursCacheUpdateService:
                     11: "из Волгограда", 12: "из Воронежа", 13: "из Саратова",
                     14: "из Тольятти", 15: "из Ижевска"
                 }
-                return city_map.get(city_code, "Москва")
+                return city_map.get(city_code, "Москвы")
             
             # ПРАВИЛЬНОЕ ПОЛУЧЕНИЕ departure
             # Приоритет: из search_params -> из hotel -> из tour -> маппинг по коду -> fallback
@@ -721,11 +721,12 @@ class RandomToursCacheUpdateService:
             elif tour.get("departurecode"):
                 departure_city = get_city_name_by_code(tour.get("departurecode"))
             else:
-                departure_city = "Москва"  # Fallback
+                departure_city = "Москвы"  # Fallback
 
            # Словарь склонений городов
             declensions = {
                 "Москва": "из Москвы",
+                "Москвы": "из Москвы",
                 "Санкт-Петербург": "из Санкт-Петербурга", 
                 "Пермь": "из Перми",
                 "Саратов": "из Саратова",
@@ -739,16 +740,25 @@ class RandomToursCacheUpdateService:
                 "Уфа": "из Уфы",
                 "Красноярск": "из Красноярска",
                 "Воронеж": "из Воронежа",
-                "Волгоград": "из Волгограда"
+                "Волгоград": "из Волгограда",
+                "Тольятти": "из Тольятти",
+                "Ижевск": "из Ижевска",
+                "Краснодар": "из Краснодара"
             }
             
-            # Приводим город к родительному падежу
-            if departure_city in declensions:
-                departure_city = declensions[departure_city]
-            elif not departure_city.startswith("из "):
-                departure_city = f"из {departure_city}"
+            # Приводим город к правильному склонению
+            departure_from = departure_city
+            if departure_city.startswith("из "):
+                departure_from = departure_city
+            else:
+                # Убираем "из " если оно есть в начале
+                clean_city = departure_city.replace("из ", "")
+                # Проверяем есть ли город в словаре склонений
+                if clean_city in declensions:
+                    departure_from = declensions[clean_city]
+                else:
+                    departure_from = f"из {clean_city}"
 
-            
             # ПРАВИЛЬНОЕ ПОЛУЧЕНИЕ seadistance
             # seadistance всегда находится в данных отеля, не тура
             seadistance = (
@@ -785,7 +795,7 @@ class RandomToursCacheUpdateService:
                 # Дополнительные поля для совместимости
                 "departurename": departure_city,  # Дублируем для совместимости  
                 "departurecode": str(search_params.get("departure", 1)) if search_params else "1",
-                "departurenamefrom": f"из {departure_city}",
+                "departurefromname": departure_from,  # Правильно склоненное название города
                 "countrycode": str(safe_get(hotel, "countrycode", search_params.get("country", 1) if search_params else 1)),
                 "countryname": safe_get(hotel, "countryname"),
                 "operatorcode": safe_get(tour, "operatorcode", ""),

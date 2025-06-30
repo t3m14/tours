@@ -1,5 +1,6 @@
 import smtplib
 import asyncio
+import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -14,14 +15,30 @@ logger = setup_logger(__name__)
 
 class EmailService:
     def __init__(self):
-        self.smtp_host = settings.SMTP_HOST
-        self.smtp_port = settings.SMTP_PORT
-        self.smtp_username = settings.SMTP_USERNAME
-        self.smtp_password = settings.SMTP_PASSWORD
-        self.email_from = settings.EMAIL_FROM
-        self.email_to = settings.EMAIL_TO
+        # ИСПРАВЛЕНИЕ: Принудительная загрузка Gmail настроек
+        self.smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        self.smtp_username = os.getenv("SMTP_USERNAME", "advice.notifications@gmail.com")
+        self.smtp_password = os.getenv("SMTP_PASSWORD", "tven oyop yxgf tltf")
+        self.email_from = os.getenv("EMAIL_FROM", "advice.notifications@gmail.com")
+        self.email_to = os.getenv("EMAIL_TO", "temi4174@mail.ru")
+        
+        # Очистка от кавычек и пробелов
+        self.smtp_password = self.smtp_password.strip().strip("'\"").replace(" ", "")
+        self.smtp_username = self.smtp_username.strip().strip("'\"")
+        self.email_from = self.email_from.strip().strip("'\"")
+        
         self.executor = ThreadPoolExecutor(max_workers=2)
-    
+        
+        # ОТЛАДКА: Логируем загруженные настройки
+        logger.info(f"🔧 EMAIL SERVICE INIT:")
+        logger.info(f"  SMTP_HOST: {self.smtp_host}")
+        logger.info(f"  SMTP_PORT: {self.smtp_port}")
+        logger.info(f"  SMTP_USERNAME: {self.smtp_username}")
+        logger.info(f"  SMTP_PASSWORD: {'*' * len(self.smtp_password)} (len={len(self.smtp_password)})")
+        logger.info(f"  EMAIL_FROM: {self.email_from}")
+        logger.info(f"  EMAIL_TO: {self.email_to}")
+
     def _create_application_email(self, application: Application) -> MIMEMultipart:
         """Создание email с информацией о заявке"""
         msg = MIMEMultipart()
@@ -60,6 +77,13 @@ ID заявки: {application.id}
     def _send_email_sync(self, msg: MIMEMultipart) -> bool:
         """Синхронная отправка email"""
         try:
+            logger.info(f"📤 Попытка отправки email:")
+            logger.info(f"  Host: {self.smtp_host}:{self.smtp_port}")
+            logger.info(f"  Login: {self.smtp_username}")
+            logger.info(f"  Password length: {len(self.smtp_password)}")
+            logger.info(f"  From: {self.email_from}")
+            logger.info(f"  To: {self.email_to}")
+            
             with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
                 server.starttls()
                 server.login(self.smtp_username, self.smtp_password)
@@ -67,10 +91,14 @@ ID заявки: {application.id}
                 text = msg.as_string()
                 server.sendmail(self.email_from, self.email_to, text)
             
+            logger.info("✅ Email отправлен успешно!")
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при отправке email: {e}")
+            logger.error(f"❌ Ошибка при отправке email: {e}")
+            logger.error(f"🔍 Настройки: host={self.smtp_host}, port={self.smtp_port}")
+            logger.error(f"🔍 Username: {self.smtp_username}")
+            logger.error(f"🔍 Password: {self.smtp_password[:4]}...{self.smtp_password[-4:]} (len={len(self.smtp_password)})")
             return False
     
     async def send_application_email(self, application: Application) -> bool:
@@ -87,14 +115,14 @@ ID заявки: {application.id}
             )
             
             if result:
-                logger.info(f"Email с заявкой {application.id} успешно отправлен")
+                logger.info(f"✅ Email с заявкой {application.id} успешно отправлен")
             else:
-                logger.error(f"Не удалось отправить email с заявкой {application.id}")
+                logger.error(f"❌ Не удалось отправить email с заявкой {application.id}")
             
             return result
             
         except Exception as e:
-            logger.error(f"Ошибка при отправке email с заявкой {application.id}: {e}")
+            logger.error(f"❌ Ошибка при отправке email с заявкой {application.id}: {e}")
             return False
     
     def _send_notification_sync(self, subject: str, body: str, to_email: str) -> bool:

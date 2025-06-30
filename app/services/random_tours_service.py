@@ -41,7 +41,7 @@ class RandomToursService:
         
         # Генерируем новые туры
         logger.info("🔄 Генерируем новые случайные туры")
-        return await self._generate_truly_random_tours(request)
+        return await self._generate_random_tours_multilevel(request)
     
     async def _generate_random_tours_multilevel(self, request: RandomTourRequest) -> List[HotTourInfo]:
         """Многоуровневая генерация случайных туров"""
@@ -151,7 +151,7 @@ class RandomToursService:
                             try:
                                 tour = HotTourInfo(**tour_data)
                                 all_tours.append(tour)
-                            except (ValueError, KeyError, TypeError) as tour_error:
+                            except Exception as tour_error:
                                 logger.debug(f"Ошибка создания тура: {tour_error}")
                                 continue
                         
@@ -405,7 +405,9 @@ class RandomToursService:
             "meal": tour_data.get("mealrussian", tour_data.get("meal", "")),
             "price": float(tour_data.get("price", 0)),
             "priceold": None,
-            "currency": tour_data.get("currency", "RUB")
+            "currency": tour_data.get("currency", "RUB"),
+            "departure": hotel_data.get('departure'),  # Дублируем departurename как departure
+            "seadistance": hotel_data.get("seadistance", random.choice([50, 100, 150, 200, 300, 500])),
         }
     
     async def _create_smart_mock_tours(self, count: int) -> List[HotTourInfo]:
@@ -534,7 +536,7 @@ class RandomToursService:
             
             # Генерируем новые туры
             request = RandomTourRequest(count=count)
-            new_tours = await self._generate_truly_random_tours(request)
+            new_tours = await self._generate_random_tours_multilevel(request)
             
             return {
                 "success": True,
@@ -941,178 +943,6 @@ class RandomToursService:
             return True  # Для этих типов пропускаем без строгой фильтрации
         
         return False
-        # Добавьте этот метод в RandomToursService
 
-    async def _generate_truly_random_tours(self, request: RandomTourRequest) -> List[HotTourInfo]:
-        """Генерация действительно случайных туров из разных стран"""
-        logger.info(f"🌍 Генерация {request.count} туров из РАЗНЫХ стран")
-        
-        # Принудительно очищаем кэш если есть force_refresh
-        if hasattr(request, 'force_refresh') and request.force_refresh:
-            cache_keys_to_clear = [
-                "random_tours_count_6",
-                "random_tours",
-                "hot_tours_random"
-            ]
-            for key in cache_keys_to_clear:
-                try:
-                    await self.cache.delete(key)
-                    logger.info(f"🗑️ Очищен кэш: {key}")
-                except:
-                    pass
-        
-        all_tours = []
-        countries_used = set()
-        
-        # Список всех доступных стран
-        all_countries = [1, 2, 4, 8, 9, 12, 13, 16, 22]  # Египет, Таиланд, Турция, Мальдивы, ОАЭ, Шри-Ланка, Китай, Вьетнам, др.
-        all_cities = [1, 2, 3, 5, 6]  # Москва, Пермь, Екатеринбург, СПб, Казань
-        
-        # Генерируем туры из разных стран
-        for i in range(request.count * 3):  # Делаем больше попыток
-            if len(all_tours) >= request.count:
-                break
-            
-            # Выбираем случайную страну, которую еще не использовали
-            available_countries = [c for c in all_countries if c not in countries_used]
-            if not available_countries:
-                # Если все страны использованы, сбрасываем список
-                countries_used.clear()
-                available_countries = all_countries
-            
-            country = random.choice(available_countries)
-            city = random.choice(all_cities)
-            
-            try:
-                # Пробуем горящие туры для этой страны
-                hot_tours_data = await tourvisor_client.get_hot_tours(
-                    city=city,
-                    items=10,
-                    countries=str(country)
-                )
-                
-                if hot_tours_data and "data" in hot_tours_data:
-                    tours_list = hot_tours_data["data"]
-                    
-                    # Фильтруем по типам отелей если указано
-                    if request.hotel_types:
-                        tours_list = self._filter_tours_by_hotel_types(tours_list)
-                    
-                    for tour_data in tours_list[:2]:  # Берем максимум 2 тура из страны
-                        try:
-                            # Добавляем немного рандомизации к цене и датам
-                            tour_data_modified = dict(tour_data)
-                            
-                            # Случайная дата в ближайшие 30 дней
-                            from datetime import datetime, timedelta
-                            random_date = datetime.now() + timedelta(days=random.randint(7, 30))
-                            tour_data_modified["flydate"] = random_date.strftime("%d.%m.%Y")
-                            
-                            # Небольшая вариация цены (±10%)
-                            if "price" in tour_data_modified:
-                                base_price = int(tour_data_modified["price"])
-                                variation = random.randint(-10, 10)
-                                tour_data_modified["price"] = int(base_price * (1 + variation/100))
-                            
-                            tour = HotTourInfo(**tour_data_modified)
-                            all_tours.append(tour)
-                            countries_used.add(country)
-                            
-                            logger.info(f"✅ Добавлен тур из {tour.countryname} (страна {country})")
-                            
-                            if len(all_tours) >= request.count:
-                                break
-                                
-                        except Exception as tour_error:
-                            logger.debug(f"⚠️ Ошибка обработки тура: {tour_error}")
-                            continue
-                
-                await asyncio.sleep(0.5)  # Пауза между запросами
-                
-            except Exception as e:
-                logger.debug(f"⚠️ Ошибка получения туров для страны {country}: {e}")
-                continue
-        
-        # Если не хватает туров, дополняем mock-данными из разных стран
-        if len(all_tours) < request.count:
-            needed = request.count - len(all_tours)
-            logger.info(f"🎭 Дополняем {needed} mock-туров")
-            
-            mock_countries = ["Турция", "Таиланд", "ОАЭ", "Греция", "Кипр", "Испания"]
-            mock_cities = ["Анталья", "Пхукет", "Дубай", "Афины", "Ларнака", "Барселона"]
-            
-            for i in range(needed):
-                country_name = random.choice(mock_countries)
-                city_name = random.choice(mock_cities)
-                
-                from datetime import datetime, timedelta
-                random_date = datetime.now() + timedelta(days=random.randint(7, 30))
-                
-                mock_tour = HotTourInfo(
-                    countrycode=str(random.randint(1, 30)),
-                    countryname=country_name,
-                    departurecode="1",
-                    departurename="Москва",
-                    departurenamefrom="Москвы",
-                    operatorcode=str(random.randint(10, 100)),
-                    operatorname=random.choice(["Pegas", "TUI", "Anex", "Coral Travel"]),
-                    hotelcode=str(random.randint(100, 9999)),
-                    hotelname=f"Hotel {city_name} {random.randint(1, 100)}",
-                    hotelstars=random.choice([3, 4, 5]),
-                    hotelregioncode=str(random.randint(1, 50)),
-                    hotelregionname=city_name,
-                    hotelpicture=f"https://example.com/hotel{i}.jpg",
-                    fulldesclink=f"#!/hotel-{i}",
-                    flydate=random_date.strftime("%d.%m.%Y"),
-                    nights=random.choice([7, 10, 14]),
-                    meal=random.choice(["Завтрак", "Полупансион", "Все включено"]),
-                    price=random.randint(50000, 200000),
-                    priceold=None,
-                    currency="RUB"
-                )
-                all_tours.append(mock_tour)
-                logger.info(f"🎭 Добавлен mock-тур в {country_name}")
-        
-        # Перемешиваем результаты
-        random.shuffle(all_tours)
-        final_tours = all_tours[:request.count]
-        
-        # Сохраняем в кэш на короткое время (10 минут)
-        cache_key = f"random_tours_mixed_{request.count}_{hash(str(request.hotel_types))}"
-        await self.cache.set(cache_key, [tour.dict() for tour in final_tours], ttl=600)
-        
-        logger.info(f"🎯 Итого: {len(final_tours)} туров из {len(set(t.countryname for t in final_tours))} стран")
-        return final_tours
-
-    def _filter_tours_by_hotel_types(self, tours_list: List[Dict]) -> List[Dict]:
-        """Фильтрация туров по типам отелей (упрощенная логика)"""
-        if not self.current_request or not self.current_request.hotel_types:
-            return tours_list
-        
-        # Упрощенная фильтрация на основе названий отелей и звездности
-        filtered_tours = []
-        
-        for tour in tours_list:
-            hotel_name = tour.get("hotelname", "").lower()
-            hotel_stars = int(tour.get("hotelstars", 0))
-            
-            should_include = False
-            
-            for hotel_type in self.current_request.hotel_types:
-                if hotel_type == "deluxe" and hotel_stars >= 5:
-                    should_include = True
-                elif hotel_type == "family" and ("family" in hotel_name or "kids" in hotel_name or hotel_stars >= 4):
-                    should_include = True
-                elif hotel_type == "beach" and ("beach" in hotel_name or "resort" in hotel_name):
-                    should_include = True
-                elif hotel_type == "active" and ("sport" in hotel_name or "activity" in hotel_name):
-                    should_include = True
-                elif hotel_type == "relax" and ("spa" in hotel_name or "wellness" in hotel_name):
-                    should_include = True
-                
-            if should_include:
-                filtered_tours.append(tour)
-        
-        return filtered_tours if filtered_tours else tours_list  # Возвращаем все, если фильтр слишком строгий
 # Создаем экземпляр улучшенного сервиса
 random_tours_service = RandomToursService()

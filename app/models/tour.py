@@ -119,6 +119,11 @@ class DirectionInfo(BaseModel):
     image_link: str
     min_price: float
 
+# app/models/tour.py - Обновленная модель HotTourInfo
+
+from pydantic import BaseModel, Field
+from typing import Optional
+
 class HotTourInfo(BaseModel):
     countrycode: str
     countryname: str
@@ -140,6 +145,21 @@ class HotTourInfo(BaseModel):
     price: float
     priceold: Optional[float] = None
     currency: str
+    
+    # ДОБАВЛЯЕМ НЕДОСТАЮЩИЕ ПОЛЯ:
+    departure: Optional[str] = Field(None, description="Город отправления (дублирует departurename)")
+    seadistance: Optional[int] = Field(None, description="Расстояние до моря в метрах")
+    
+    # Дополнительные поля для обратной совместимости и расширения
+    hotel_rating: Optional[float] = Field(None, description="Рейтинг отеля")
+    generation_strategy: Optional[str] = Field(None, description="Стратегия генерации тура")
+    search_source: Optional[str] = Field(None, description="Источник поиска")
+    api_filter_used: Optional[str] = Field(None, description="Использованный API фильтр")
+    hotel_type_display: Optional[str] = Field(None, description="Отображаемый тип отеля")
+
+    class Config:
+        # Позволяет дополнительные поля, которые не определены в модели
+        extra = "allow"
 
 class TourActualizationRequest(BaseModel):
     tour_id: str

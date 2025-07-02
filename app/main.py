@@ -19,8 +19,7 @@ from app.tasks.random_tours_cache_update import start_random_tours_cache_update_
 from app.utils.logger import setup_logger
 from fastapi.staticfiles import StaticFiles
 import os
-# В app/main.py добавьте:
-from app.api.v1 import debug_tours
+
 
 logger = setup_logger(__name__)
 
@@ -152,7 +151,6 @@ app.include_router(hotels.router, prefix="/api/v1/hotels", tags=["hotels"])
 app.include_router(references.router, prefix="/api/v1/references", tags=["references"])
 app.include_router(applications.router, prefix="/api/v1/applications", tags=["applications"])
 app.include_router(sitemap.router, prefix="/sitemap", tags=["sitemap"])
-app.include_router(debug_tours.router, prefix="/api/v1")
 
 # Подключение роутера направлений
 from app.api.v1.directions import router as directions_router

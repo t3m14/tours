@@ -801,16 +801,47 @@ class TourVisorClient:
         
         return await self._make_request_with_retry("list.php", params)
     
-    async def get_hotel_info(self, hotel_code: str) -> Dict[str, Any]:
-        """Получение информации об отеле"""
-        params = {
-            "hotelcode": hotel_code,
-            "format": "json",
-            "imgbig": 1,
-            "reviews": 1
-        }
-        
-        return await self._make_request("hotel.php", params)
+    async def get_hotel_info(self, hotel_code: str, include_reviews: bool = True, 
+                           big_images: bool = True, remove_tags: bool = True) -> Optional[Dict[str, Any]]:
+        """Получение детальной информации об отеле"""
+        try:
+            params = {
+                "format": "json",
+                "hotelcode": hotel_code,
+                "authlogin": self.login,
+                "authpass": self.password
+            }
+            
+            if include_reviews:
+                params["reviews"] = 1
+            
+            if big_images:
+                params["imgbig"] = 1
+            
+            if remove_tags:
+                params["removetags"] = 1
+            
+            logger.info(f"🏨 Запрос информации об отеле {hotel_code}")
+            
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.get(
+                    f"{self.base_url}/hotel.php",
+                    params=params
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"✅ Получена информация об отеле {hotel_code}")
+                        return data
+                    else:
+                        error_text = await response.text()
+                        logger.warning(f"⚠️ HTTP {response.status} для отеля {hotel_code}: {error_text[:200]}")
+                        return None
+                        
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка запроса информации об отеле {hotel_code}: {e}")
+            return None
+
+
 
     async def actualize_tour(self, tour_id: str, request_check: int = 0) -> Dict[str, Any]:
         """Актуализация тура"""

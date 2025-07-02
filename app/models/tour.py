@@ -2,7 +2,8 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-# app/models/tour.py - простое исправление моделей:
+# import validator from pydantic
+from pydantic import field_validator
 
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Union
@@ -37,31 +38,52 @@ class TourSearchRequest(BaseModel):
     hideregular: Optional[int] = Field(None, description="Скрыть туры на регулярных рейсах")
     services: Optional[str] = Field(None, description="Услуги в отеле через запятую")
 
-class TourInfo(BaseModel):
-    operatorcode: str
-    operatorname: str
-    flydate: str
-    nights: int
-    price: float
-    fuelcharge: float
-    priceue: Optional[float] = None
-    placement: str
-    adults: int
-    child: int
-    meal: str
-    mealrussian: str
-    room: str
-    tourname: str
-    tourlink: Optional[str] = None
-    tourid: str
-    currency: str
-    regular: Optional[int] = None
-    promo: Optional[int] = None
-    onrequest: Optional[int] = None
-    flightstatus: Optional[int] = None
-    hotelstatus: Optional[int] = None
-    nightflight: Optional[int] = None
 
+class TourInfo(BaseModel):
+    """Информация о туре - ИСПРАВЛЕННАЯ версия"""
+    
+    # Основные поля
+    operatorcode: str = Field(..., description="Код туроператора")
+    operatorname: str = Field(..., description="Название туроператора") 
+    flydate: str = Field(..., description="Дата вылета")
+    nights: int = Field(..., description="Количество ночей")
+    price: float = Field(..., description="Цена тура")
+    placement: str = Field(..., description="Размещение")
+    adults: int = Field(..., description="Количество взрослых")
+    children: int = Field(0, description="Количество детей")
+    meal: str = Field("", description="Тип питания")
+    room: str = Field("", description="Тип номера")
+    currency: str = Field("RUB", description="Валюта")
+    
+    # ✅ ИСПРАВЛЕННОЕ поле - может быть строкой ИЛИ словарем
+    tourname: Union[str, Dict[str, Any]] = Field("", description="Название тура")
+    
+    # Опциональные поля
+    tourid: Optional[str] = Field(None, description="ID тура для актуализации")
+    fuelcharge: float = Field(0, description="Топливный сбор")
+    operatorlink: Optional[str] = Field(None, description="Ссылка на тур у оператора")
+    regular: Optional[bool] = Field(False, description="Регулярный рейс")
+    promo: Optional[bool] = Field(False, description="Промо тур")
+    onrequest: Optional[bool] = Field(False, description="Под запрос")
+    
+    # Дополнительные поля
+    mealcode: Optional[str] = Field(None, description="Код типа питания")
+    flightstatus: Optional[int] = Field(None, description="Статус рейса")
+    hotelstatus: Optional[int] = Field(None, description="Статус отеля")
+    nightflight: Optional[int] = Field(None, description="Ночной перелет")
+    
+
+    @classmethod
+    @field_validator('tourname', mode='before')
+    def validate_tourname(cls, v):
+        """Конвертируем любое значение в строку"""
+        if isinstance(v, dict):
+            # Если пришел словарь - берем первое значение или пустую строку
+            return str(list(v.values())[0]) if v else ""
+        elif v is None:
+            return ""
+        else:
+            return str(v)
 class HotelInfo(BaseModel):
     hotelcode: str
     price: float
@@ -119,11 +141,6 @@ class DirectionInfo(BaseModel):
     image_link: str
     min_price: float
 
-# app/models/tour.py - Обновленная модель HotTourInfo
-
-from pydantic import BaseModel, Field
-from typing import Optional
-
 class HotTourInfo(BaseModel):
     countrycode: str
     countryname: str
@@ -145,21 +162,6 @@ class HotTourInfo(BaseModel):
     price: float
     priceold: Optional[float] = None
     currency: str
-    
-    # ДОБАВЛЯЕМ НЕДОСТАЮЩИЕ ПОЛЯ:
-    departure: Optional[str] = Field(None, description="Город отправления (дублирует departurename)")
-    seadistance: Optional[int] = Field(None, description="Расстояние до моря в метрах")
-    
-    # Дополнительные поля для обратной совместимости и расширения
-    hotel_rating: Optional[float] = Field(None, description="Рейтинг отеля")
-    generation_strategy: Optional[str] = Field(None, description="Стратегия генерации тура")
-    search_source: Optional[str] = Field(None, description="Источник поиска")
-    api_filter_used: Optional[str] = Field(None, description="Использованный API фильтр")
-    hotel_type_display: Optional[str] = Field(None, description="Отображаемый тип отеля")
-
-    class Config:
-        # Позволяет дополнительные поля, которые не определены в модели
-        extra = "allow"
 
 class TourActualizationRequest(BaseModel):
     tour_id: str

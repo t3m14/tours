@@ -1,7 +1,7 @@
 import asyncio
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
-
+import time
 from app.core.tourvisor_client import tourvisor_client
 from app.services.cache_service import cache_service
 from app.models.tour import (
@@ -123,39 +123,63 @@ class TourService:
             logger.error(f"Ошибка при продолжении поиска: {e}")
             raise
     
-    
+        
+    # app/services/tour_service.py - добавить в начало actualize_tour
+
     async def actualize_tour(self, request: TourActualizationRequest) -> DetailedTourInfo:
-        """Актуализация тура"""
+        """Актуализация тура с детальным логированием"""
         try:
+            # 🔍 КРИТИЧЕСКИ ВАЖНОЕ ЛОГИРОВАНИЕ
+            logger.error(f"🆔 TOUR_ID ЗАПРОС: {request.tour_id}")
+            logger.error(f"🆔 REQUEST_CHECK: {request.request_check}")
+            logger.error(f"🆔 CURRENCY: {request.currency}")
+            
+            # Время начала для измерения производительности
+            start_time = time.time()
+            
             logger.info(f"🔍 Начинаем актуализацию тура {request.tour_id}")
             
-            # Простая актуализация
-            basic_info = await tourvisor_client.actualize_tour(
-                request.tour_id,
-                request.request_check
-            )
+            # ТОЛЬКО ОДИН запрос - actdetail.php
+            detailed_info = await tourvisor_client.get_detailed_actualization(request.tour_id)
             
-            logger.info(f"📋 Базовая актуализация завершена")
+            end_time = time.time()
+            logger.error(f"⏱️ ВРЕМЯ ВЫПОЛНЕНИЯ: {end_time - start_time:.2f} секунд")
             
-            # Детальная актуализация с рейсами
-            detailed_info = await tourvisor_client.get_detailed_actualization(
-                request.tour_id
-            )
+            # Проверяем что получили
+            if not detailed_info:
+                logger.error(f"❌ ПУСТОЙ ОТВЕТ от actdetail.php для tour_id: {request.tour_id}")
+                return DetailedTourInfo(tour={}, flights=[], tourinfo={})
             
-            logger.info(f"✈️ Детальная актуализация завершена")
+            # Логируем структуру ответа  
+            logger.error(f"📊 КЛЮЧИ В ОТВЕТЕ: {list(detailed_info.keys()) if isinstance(detailed_info, dict) else 'НЕ СЛОВАРЬ'}")
             
-            # Безопасное создание ответа
-            tour_data = basic_info.get("tour", {}) if basic_info else {}
-            flights_data = detailed_info.get("flights", []) if detailed_info else []
-            tourinfo_data = detailed_info.get("tourinfo", {}) if detailed_info else {}
+            # Извлекаем данные
+            tour_data = detailed_info.get("tour", {})
+            flights_data = detailed_info.get("flights", [])
+            tourinfo_data = detailed_info.get("tourinfo", {})
             
-            # Обрабатываем flights_data для совместимости с Pydantic
+            # Логируем количество рейсов
+            logger.error(f"✈️ КОЛИЧЕСТВО ВАРИАНТОВ РЕЙСОВ: {len(flights_data) if isinstance(flights_data, list) else 'НЕ СПИСОК'}")
+            
+            # Если нет tour данных в actdetail, берем из actualize.php
+            if not tour_data:
+                logger.warning(f"⚠️ НЕТ tour данных в actdetail.php, делаем fallback запрос")
+                basic_info = await tourvisor_client.actualize_tour(
+                    request.tour_id,
+                    request.request_check
+                )
+                tour_data = basic_info.get("data", {}).get("tour", {}) if basic_info else {}
+                logger.error(f"📋 FALLBACK tour данные получены: {bool(tour_data)}")
+            
+            # Обрабатываем flights как есть, без изменений
             processed_flights = []
-            if isinstance(flights_data, list):
-                for flight_group in flights_data:
+            if flights_data and isinstance(flights_data, list):
+                for i, flight_group in enumerate(flights_data):
                     if isinstance(flight_group, dict):
-                        # Создаем безопасную копию
-                        safe_flight = {
+                        # Логируем каждый рейс для отладки
+                        logger.error(f"✈️ РЕЙС {i+1}: {flight_group.get('dateforward')} → {flight_group.get('datebackward')}, default: {flight_group.get('isdefault')}")
+                        
+                        processed_flights.append({
                             "forward": flight_group.get("forward", []),
                             "backward": flight_group.get("backward", []),
                             "dateforward": flight_group.get("dateforward", ""),
@@ -163,8 +187,7 @@ class TourService:
                             "price": flight_group.get("price", {}),
                             "fuelcharge": flight_group.get("fuelcharge", {}),
                             "isdefault": flight_group.get("isdefault", False)
-                        }
-                        processed_flights.append(safe_flight)
+                        })
             
             result = DetailedTourInfo(
                 tour=tour_data,
@@ -172,19 +195,13 @@ class TourService:
                 tourinfo=tourinfo_data
             )
             
-            logger.info(f"✅ Актуализация тура {request.tour_id} успешно завершена")
+            logger.error(f"✅ ИТОГ: tour_id={request.tour_id}, рейсов={len(processed_flights)}, tour_данных={bool(tour_data)}")
             return result
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при актуализации тура {request.tour_id}: {e}")
-            logger.error(f"❌ Тип ошибки: {type(e)}")
-            
-            # Возвращаем пустую структуру при ошибке
-            return DetailedTourInfo(
-                tour={},
-                flights=[],
-                tourinfo={}
-            )
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА tour_id {request.tour_id}: {e}")
+            logger.error(f"❌ ТИП ОШИБКИ: {type(e)}")
+            raise
     async def search_tour_by_id(self, tour_id: str) -> Optional[Dict[str, Any]]:
         """Поиск тура по ID"""
         try:

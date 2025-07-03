@@ -13,6 +13,7 @@ jobs:
     steps:
     - name: Add server to known hosts
       run: |
+        mkdir -p ~/.ssh
         ssh-keyscan -H ${{ secrets.HOST }} >> ~/.ssh/known_hosts
         ssh-keyscan -H github.com >> ~/.ssh/known_hosts
         token: ${{ secrets.PAT_TOKEN }}

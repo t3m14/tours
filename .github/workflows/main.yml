@@ -1,0 +1,62 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: [ main ]
+  repository_dispatch:
+    types: [submodule-update]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Setup SSH
+      uses: webfactory/ssh-agent@v0.8.0
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+    
+    - name: Add server to known hosts
+      run: |
+        ssh-keyscan -H ${{ secrets.HOST }} >> ~/.ssh/known_hosts
+    
+    - name: Deploy to server
+      run: |
+        ssh ${{ secrets.USERNAME }}@${{ secrets.HOST }} << 'EOF'
+          cd ~/tours
+          
+          # Остановить контейнеры
+          docker-compose down
+          
+          # Обновить основной репозиторий
+          git pull origin main
+          
+          # Обновить submodule
+          git submodule update --init --recursive --remote
+          
+          # Пересобрать и запустить контейнеры
+          docker-compose build --no-cache
+          docker-compose up -d
+          
+          # Очистить неиспользуемые образы
+          docker image prune -f
+          
+          echo "Deployment completed successfully!"
+        EOF
+    
+    - name: Verify deployment
+      run: |
+        ssh ${{ secrets.USERNAME }}@${{ secrets.HOST }} << 'EOF'
+          echo "Checking running containers:"
+          docker-compose ps
+          
+          echo "Checking application health:"
+          curl -f http://localhost:8000/health || echo "Backend health check failed"
+          curl -f http://localhost:3001 || echo "Frontend health check failed"
+        EOF

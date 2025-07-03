@@ -37,6 +37,16 @@ services:
       - redis
     profiles:
       - dev
+  
+  frontend:
+    image: frontend:latest
+    container_name: frontend
+    restart: always
+    build:
+      context: ./a-tour_frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3000"
 
 volumes:
   redis_data:

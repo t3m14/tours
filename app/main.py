@@ -185,7 +185,7 @@ async def websocket_tours(websocket: WebSocket, request_id: str):
 @app.get("/")
 async def root():
     return {
-        "message": "Travel Agency Backend API", 
+        "message": "Alexandra Travel Agency Backend API", 
         "version": "2.2.0",
         "features": [
             "Массовый сбор направлений из всех стран",

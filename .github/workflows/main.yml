@@ -18,7 +18,6 @@ jobs:
         ssh-keyscan -H 37.230.112.207 >> ~/.ssh/known_hosts
         ssh-keyscan -H github.com >> ~/.ssh/known_hosts
         echo "Known hosts added successfully"
-        token: ${{ secrets.PAT_TOKEN }}
     
     - name: Setup SSH
       uses: webfactory/ssh-agent@v0.8.0

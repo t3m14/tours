@@ -14,8 +14,10 @@ jobs:
     - name: Add server to known hosts
       run: |
         mkdir -p ~/.ssh
-        ssh-keyscan -H ${{ secrets.HOST }} >> ~/.ssh/known_hosts
+        echo "Adding hosts to known_hosts..."
+        ssh-keyscan -H 37.230.112.207 >> ~/.ssh/known_hosts
         ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+        echo "Known hosts added successfully"
         token: ${{ secrets.PAT_TOKEN }}
     
     - name: Setup SSH
@@ -29,7 +31,7 @@ jobs:
     
     - name: Deploy to server
       run: |
-        ssh ${{ secrets.USERNAME }}@${{ secrets.HOST }} << 'EOF'
+        ssh root@37.230.112.207 << 'EOF'
           cd ~/tours
           
           # Остановить контейнеры
@@ -53,7 +55,19 @@ jobs:
     
     - name: Verify deployment
       run: |
-        ssh ${{ secrets.USERNAME }}@${{ secrets.HOST }} << 'EOF'
+        ssh root@37.230.112.207 << 'EOF'
+          cd /home/github-runner/tours
+          echo "Checking running containers:"
+          docker-compose ps
+          
+          echo "Checking application health:"
+          curl -f http://localhost:8000 || echo "Backend health check failed"
+          curl -f http://localhost:3001 || echo "Frontend health check failed"
+        EOF
+    
+    - name: Verify deployment
+      run: |
+        ssh root@37.230.112.207 << 'EOF'
           echo "Checking running containers:"
           docker-compose ps
           

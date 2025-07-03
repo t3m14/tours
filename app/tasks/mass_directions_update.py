@@ -1,4 +1,3 @@
-# app/tasks/mass_directions_update.py
 
 import asyncio
 from datetime import datetime, timedelta

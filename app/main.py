@@ -11,6 +11,7 @@ from app.api.v1 import tours, hotels, references, applications, sitemap
 from app.api.websockets import websocket_manager
 from app.tasks.cache_warmup import warm_up_cache
 from app.tasks.random_tours_update import update_random_tours
+from app.tasks.mass_directions_update import periodic_directions_update, initial_directions_collection
 # Импорт автообновления кэша направлений
 from app.tasks.directions_cache_update import start_directions_cache_update_task, stop_directions_cache_update_task
 # НОВОЕ: Импорт автообновления кэша случайных туров

@@ -1034,17 +1034,10 @@ class TourVisorClient:
         
         return debug_info
     # Добавить в app/core/tourvisor_client.py
-
     async def get_hotel_info(self, hotel_code: str, include_reviews: bool = True, 
-                           big_images: bool = True, remove_tags: bool = True) -> Dict[str, Any]:
+                            big_images: bool = True, remove_tags: bool = True) -> Dict[str, Any]:
         """
         Получение детальной информации об отеле
-        
-        Args:
-            hotel_code: Код отеля
-            include_reviews: Включать отзывы (по умолчанию True)
-            big_images: Большие изображения 800px (по умолчанию True)
-            remove_tags: Убирать HTML теги из списков (по умолчанию True)
         """
         try:
             params = {
@@ -1063,22 +1056,32 @@ class TourVisorClient:
             if remove_tags:
                 params["removetags"] = 1
             
-            logger.info(f"🏨 Запрос информации об отеле {hotel_code}")
+            # Полный URL для отладки
+            full_url = f"{self.base_url}/hotel.php"
+            logger.info(f"🏨 Запрос к URL: {full_url}")
+            logger.info(f"🏨 Параметры: {params}")
             
-            async with aiohttp.ClientSession(timeout=self.request_timeout) as session:
-                async with session.get(
-                    f"{self.base_url}/xml/hotel.php",
-                    params=params
-                ) as response:
+            timeout = aiohttp.ClientTimeout(total=self.request_timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(full_url, params=params) as response:
+                    response_text = await response.text()
+                    logger.info(f"📝 Статус ответа: {response.status}")
+                    logger.info(f"📝 Заголовки ответа: {dict(response.headers)}")
+                    logger.info(f"📝 Тело ответа (первые 500 символов): {response_text[:500]}")
+                    
                     if response.status == 200:
-                        data = await response.json()
-                        logger.info(f"✅ Получена информация об отеле {hotel_code}")
-                        return data
+                        try:
+                            data = await response.json()
+                            logger.info(f"✅ Получена информация об отеле {hotel_code}")
+                            return data
+                        except:
+                            # Если не JSON, возвращаем как есть
+                            logger.warning(f"⚠️ Ответ не является JSON, возвращаем текст")
+                            return {"raw_response": response_text}
                     else:
-                        error_text = await response.text()
-                        logger.error(f"❌ Ошибка получения информации об отеле {hotel_code}: {response.status} - {error_text}")
-                        raise Exception(f"HTTP {response.status}: {error_text}")
-                        
+                        logger.error(f"❌ Ошибка получения информации об отеле {hotel_code}: {response.status}")
+                        return {"error": f"HTTP {response.status}", "response": response_text}
+                            
         except Exception as e:
             logger.error(f"❌ Ошибка запроса информации об отеле {hotel_code}: {e}")
             raise

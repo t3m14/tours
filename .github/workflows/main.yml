@@ -44,7 +44,7 @@ jobs:
           
           # Пересобрать и запустить контейнеры
           docker-compose build --no-cache
-          docker-compose up -d
+          docker-compose up --build -d
           
           # Очистить неиспользуемые образы
           docker image prune -f

@@ -1,3 +1,3 @@
 [submodule "a-tour_frontend"]
-    path = a-tour_frontend
-    url = git@github.com:Visual-Sense-Lab-Team/a-tour_frontend.git
+	path = a-tour_frontend
+	url = https://github.com/Visual-Sense-Lab-Team/a-tour_frontend.git

@@ -19,7 +19,7 @@ class TourVisorClient:
             "authpass": settings.TOURVISOR_AUTH_PASS
         }
         self.session: Optional[aiohttp.ClientSession] = None
-        self.request_timeout = 30  # Увеличиваем таймаут запросов
+        self.request_timeout = 600  # Увеличиваем таймаут запросов
     
     async def get_session(self):
         if self.session is None or self.session.closed:

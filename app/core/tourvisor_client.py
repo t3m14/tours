@@ -1065,7 +1065,7 @@ class TourVisorClient:
             
             logger.info(f"🏨 Запрос информации об отеле {hotel_code}")
             
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            async with aiohttp.ClientSession(timeout=self.request_timeout) as session:
                 async with session.get(
                     f"{self.base_url}/xml/hotel.php",
                     params=params

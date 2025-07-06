@@ -578,12 +578,12 @@ class DirectionsService:
             3: "/static/mockup_images/india.webp",        # Индия
             4: "/static/mockup_images/turkey.jpeg",       # Турция
             8: "/static/mockup_images/maldives.jpg",      # Мальдивы
-            9: "/static/mockup_images/uae.jpg",           # ОАЭ (исправлено название)
-            10: "/static/mockup_images/cuba.jpg",         # Куба (исправлено название)
+            9: "/static/mockup_images/oae.jpg",           # ОАЭ (исправлено название)
+            10: "/static/mockup_images/kuba.jpg",         # Куба (исправлено название)
             12: "/static/mockup_images/sri_lanka.jpg",    # Шри-Ланка
             13: "/static/mockup_images/china.jpg",        # Китай
             16: "/static/mockup_images/vietnam.jpg",      # Вьетнам
-            40: "/static/mockup_images/cambodia.jpg",     # Камбоджа (исправлено название)
+            40: "/static/mockup_images/kambodja.jpg",     # Камбоджа (исправлено название)
             46: "/static/mockup_images/abkhazia.jpg",     # Абхазия
             47: "/static/mockup_images/russia.webp",      # Россия
         }

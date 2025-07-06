@@ -97,7 +97,7 @@ class HotelInfo(BaseModel):
     hotelrating: float
     hoteldescription: Optional[str] = None
     fulldesclink: Optional[str] = None
-    reviewlink: Optional[str] = None
+    reviewlink: Union[str, Dict[str, Any], List[Any], int] = Field(None, description="Link to reviews")
     picturelink: Optional[str] = None
     isphoto: Optional[int] = None
     iscoords: Optional[int] = None
@@ -105,7 +105,6 @@ class HotelInfo(BaseModel):
     isreviews: Optional[int] = None
     seadistance: Optional[int] = None
     tours: List[TourInfo]
-
 class SearchStatus(BaseModel):
     state: str  # searching или finished
     hotelsfound: int

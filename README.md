@@ -1,5 +1,5 @@
-# Travel Agency Backend
-
+# Travel Agency Backend 
+---
 Backend API для турагентства с интеграцией TourVisor API. Предоставляет функционал поиска туров, управления заявками, кэширования популярных направлений и real-time обновлений через WebSocket.
 
 ## Основные возможности

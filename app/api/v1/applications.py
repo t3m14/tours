@@ -20,6 +20,7 @@ async def submit_application(
     Отправка заявки с сайта
     
     Сохраняет заявку и отправляет на email alexandratur@yandex.ru
+    Теперь поддерживает поле 'body' с HTML-контентом для рендеринга в письме
     """
     try:
         # Создаем объект заявки
@@ -33,9 +34,14 @@ async def submit_application(
             nearest_office=application_request.nearest_office,
             communication_time=application_request.communication_time,
             description=application_request.description,
+            body=application_request.body,  # НОВОЕ ПОЛЕ
             created_at=datetime.now(),
             status="new"
         )
+        
+        # Логируем получение HTML body для отладки
+        if application.body:
+            logger.info(f"📝 Получен HTML body для заявки {application_id}, длина: {len(application.body)} символов")
         
         # Сохраняем заявку в кэш (Redis)
         await cache_service.set(

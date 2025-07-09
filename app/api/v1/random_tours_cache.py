@@ -620,4 +620,326 @@ async def compare_generation_strategies(hotel_type: str) -> Dict[str, Any]:
         raise HTTPException(
             status_code=500,
             detail=f"Ошибка при анализе стратегий: {str(e)}"
+        )# app/api/v1/random_tours_cache.py - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ PREVIEW ENDPOINT
+
+@router.get("/preview/{hotel_type}")
+async def preview_cached_tours(hotel_type: str, limit: int = 3) -> Dict[str, Any]:
+    """
+    Предварительный просмотр закэшированных туров для типа отеля
+    
+    ОБНОВЛЕНО: Теперь включает поля hoteldescriptions и tours как в обычном поиске
+    
+    Args:
+        hotel_type: Тип отеля (any, active, relax, family, health, city, beach, deluxe)
+        limit: Количество туров для предварительного просмотра (по умолчанию 3)
+        
+    Returns:
+        Dict с информацией о типе отеля и preview туров с полными данными
+    """
+    try:
+        # Получаем поддерживаемые типы отелей
+        supported_types = random_tours_cache_update_service.get_supported_hotel_types()["hotel_types"]
+        
+        if hotel_type not in supported_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Неподдерживаемый тип отеля: {hotel_type}. Доступные типы: {list(supported_types.keys())}"
+            )
+        
+        hotel_type_info = supported_types[hotel_type]
+        display_name = hotel_type_info["display_name"]
+        cache_key_suffix = hotel_type_info["cache_key"]
+        
+        logger.info(f"🎭 Preview запрос для типа отеля: {display_name} (лимит: {limit})")
+        
+        # Получаем туры из кэша
+        cache_key = f"random_tours_{cache_key_suffix}"
+        cached_tours = await cache_service.get(cache_key)
+        
+        if not cached_tours:
+            return {
+                "success": False,
+                "message": f"Нет закэшированных туров для типа '{display_name}'",
+                "hotel_type": {
+                    "key": hotel_type,
+                    "display_name": display_name,
+                    "api_param": hotel_type_info["api_param"]
+                },
+                "preview_tours": [],
+                "total_cached": 0,
+                "recommendation": "Запустите генерацию туров: POST /api/v1/random-tours/cache/generate/{hotel_type}",
+                "cache_key": cache_key,
+                "enhanced_features": {
+                    "includes_descriptions": False,
+                    "includes_tours_data": False
+                }
+            }
+        
+        # Ограничиваем количество туров для preview
+        preview_tours = cached_tours[:limit]
+        
+        # Обогащаем туры данными если они еще не обогащены
+        enriched_tours = []
+        for tour in preview_tours:
+            enriched_tour = await _enrich_preview_tour(tour)
+            enriched_tours.append(enriched_tour)
+        
+        # Анализируем качество кэша
+        total_tours = len(cached_tours)
+        real_tours_count = len([t for t in cached_tours if t.get("generation_strategy") in ["search", "hot_tours"]])
+        mock_tours_count = total_tours - real_tours_count
+        
+        # Проверяем наличие расширенных данных
+        has_descriptions = any(t.get("hoteldescriptions") for t in cached_tours)
+        has_tours_data = any(t.get("tours") for t in cached_tours)
+        
+        return {
+            "success": True,
+            "message": f"Найдено {total_tours} туров для типа '{display_name}'",
+            "hotel_type": {
+                "key": hotel_type,
+                "display_name": display_name,
+                "api_param": hotel_type_info["api_param"],
+                "cache_key": cache_key_suffix
+            },
+            "preview_tours": enriched_tours,
+            "total_cached": total_tours,
+            "cache_stats": {
+                "real_tours": real_tours_count,
+                "mock_tours": mock_tours_count,
+                "quality_percentage": f"{(real_tours_count/total_tours*100):.1f}%" if total_tours > 0 else "0%"
+            },
+            "enhanced_features": {
+                "includes_descriptions": has_descriptions,
+                "includes_tours_data": has_tours_data,
+                "tourvisor_api_integration": hotel_type_info["api_param"] is not None
+            },
+            "api_integration": {
+                "uses_hoteltypes_filter": hotel_type_info["api_param"] is not None,
+                "api_parameter": hotel_type_info["api_param"]
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Ошибка preview туров для {hotel_type}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка при получении preview: {str(e)}"
+        )
+
+
+async def _enrich_preview_tour(tour: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Обогащение тура для preview с добавлением hoteldescriptions и tours
+    
+    Создает структуру данных аналогичную обычному поиску туров
+    """
+    try:
+        from app.core.tourvisor_client import tourvisor_client
+        
+        # Создаем копию тура для обогащения
+        enriched_tour = tour.copy()
+        
+        # БЛОК 1: ОСНОВНАЯ ИНФОРМАЦИЯ ОБ ОТЕЛЕ
+        hotel_info = {
+            "hotelcode": tour.get("hotelcode", ""),
+            "hotelname": tour.get("hotel_name", ""),
+            "hotelstars": tour.get("hotel_stars", 0),
+            "hotelrating": tour.get("hotel_rating", 0.0),
+            "countryname": tour.get("country_name", ""),
+            "regionname": tour.get("region_name", ""),
+            "seadistance": tour.get("seadistance", 0),
+            "picturelink": tour.get("picture_link", ""),
+            "fulldesclink": tour.get("fulldesclink", ""),
+            "reviewlink": tour.get("reviewlink", "")
+        }
+        
+        # БЛОК 2: ПОЛУЧЕНИЕ HOTELDESCRIPTIONS
+        hotel_description = ""
+        
+        # Если уже есть описание в кэше
+        if tour.get("hoteldescriptions"):
+            hotel_description = tour["hoteldescriptions"]
+        else:
+            # Пытаемся получить описание через API
+            hotel_code = tour.get("hotelcode")
+            if hotel_code and not hotel_code.startswith("MOCK_"):
+                try:
+                    hotel_details = await tourvisor_client.get_hotel_info(hotel_code)
+                    if hotel_details and isinstance(hotel_details, dict):
+                        hotel_description = (
+                            hotel_details.get("hoteldescription", "") or
+                            hotel_details.get("description", "") or
+                            f"Отель {tour.get('hotel_name', 'Unknown Hotel')}"
+                        )
+                except Exception as api_error:
+                    logger.debug(f"Не удалось получить описание отеля {hotel_code}: {api_error}")
+            
+            # Fallback описание
+            if not hotel_description:
+                stars_text = "⭐" * tour.get("hotel_stars", 0)
+                hotel_description = f"Отель {tour.get('hotel_name', 'Unknown Hotel')} {stars_text} расположен в {tour.get('region_name', 'курортной зоне')}."
+        
+        enriched_tour["hoteldescriptions"] = hotel_description
+        
+        # БЛОК 3: ФОРМИРОВАНИЕ СТРУКТУРЫ TOURS
+        tours_data = []
+        
+        # Если уже есть tours в кэше
+        if tour.get("tours"):
+            tours_data = tour["tours"]
+        else:
+            # Создаем tours структуру из основных данных тура
+            tour_data = {
+                "operatorcode": tour.get("operator_code", ""),
+                "operatorname": tour.get("operator_name", ""),
+                "flydate": tour.get("fly_date", ""),
+                "nights": tour.get("nights", 7),
+                "price": tour.get("price", 0),
+                "currency": tour.get("currency", "RUB"),
+                "placement": tour.get("placement", "DBL"),
+                "adults": tour.get("adults", 2),
+                "children": tour.get("children", 0),
+                "meal": tour.get("meal", ""),
+                "mealrussian": tour.get("meal", ""),
+                "tourname": tour.get("tour_name", ""),
+                "tourid": tour.get("tour_id", f"preview_tour_{random.randint(1000, 9999)}")
+            }
+            tours_data = [tour_data]
+        
+        enriched_tour["tours"] = tours_data
+        
+        # БЛОК 4: ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ ДЛЯ СОВМЕСТИМОСТИ
+        enriched_tour.update({
+            # Совместимость с форматом поиска
+            "price": tour.get("price", 0),  # Минимальная цена по отелю
+            "countrycode": tour.get("countrycode", ""),
+            "regioncode": tour.get("regioncode", ""),
+            "subregioncode": tour.get("subregioncode", ""),
+            
+            # Флаги наличия дополнительной информации
+            "isphoto": 1 if tour.get("picture_link") else 0,
+            "iscoords": 0,  # Координаты пока не поддерживаются
+            "isdescription": 1 if hotel_description else 0,
+            "isreviews": 1 if tour.get("reviewlink") else 0,
+            
+            # Метаданные для отладки
+            "preview_enhanced": True,
+            "data_source": tour.get("generation_strategy", "unknown"),
+            "enhanced_at": datetime.now().isoformat()
+        })
+        
+        return enriched_tour
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка обогащения preview тура: {e}")
+        
+        # Возвращаем минимально обогащенный тур
+        fallback_tour = tour.copy()
+        fallback_tour.update({
+            "hoteldescriptions": f"Отель {tour.get('hotel_name', 'Unknown Hotel')}",
+            "tours": [{
+                "price": tour.get("price", 0),
+                "nights": tour.get("nights", 7),
+                "meal": tour.get("meal", ""),
+                "placement": tour.get("placement", "DBL"),
+                "tourid": f"fallback_tour_{random.randint(1000, 9999)}"
+            }],
+            "preview_enhanced": False,
+            "fallback_used": True
+        })
+        
+        return fallback_tour
+
+
+# ДОПОЛНИТЕЛЬНЫЙ ENDPOINT ДЛЯ ПОЛУЧЕНИЯ ПОЛНОЙ СТРУКТУРЫ ТУРА
+@router.get("/preview/{hotel_type}/detailed")
+async def get_detailed_preview_tour(
+    hotel_type: str, 
+    tour_index: int = 0,
+    include_api_data: bool = True
+) -> Dict[str, Any]:
+    """
+    Получение детальной информации о конкретном туре из preview
+    
+    Args:
+        hotel_type: Тип отеля
+        tour_index: Индекс тура в кэше (по умолчанию 0 - первый тур)
+        include_api_data: Включать данные из TourVisor API
+        
+    Returns:
+        Полная информация о туре в формате аналогичном результатам поиска
+    """
+    try:
+        # Получаем поддерживаемые типы отелей
+        supported_types = random_tours_cache_update_service.get_supported_hotel_types()["hotel_types"]
+        
+        if hotel_type not in supported_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Неподдерживаемый тип отеля: {hotel_type}"
+            )
+        
+        hotel_type_info = supported_types[hotel_type]
+        cache_key_suffix = hotel_type_info["cache_key"]
+        
+        # Получаем туры из кэша
+        cache_key = f"random_tours_{cache_key_suffix}"
+        cached_tours = await cache_service.get(cache_key)
+        
+        if not cached_tours:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Нет туров в кэше для типа {hotel_type}"
+            )
+        
+        if tour_index >= len(cached_tours):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Тур с индексом {tour_index} не найден. Доступно туров: {len(cached_tours)}"
+            )
+        
+        tour = cached_tours[tour_index]
+        
+        # Полное обогащение тура
+        detailed_tour = await _enrich_preview_tour(tour)
+        
+        # Дополнительные API данные если запрошены
+        if include_api_data:
+            hotel_code = tour.get("hotelcode")
+            if hotel_code and not hotel_code.startswith("MOCK_"):
+                try:
+                    from app.core.tourvisor_client import tourvisor_client
+                    hotel_details = await tourvisor_client.get_hotel_info(
+                        hotel_code, 
+                        include_reviews=True, 
+                        big_images=True
+                    )
+                    if hotel_details:
+                        detailed_tour["api_hotel_details"] = hotel_details
+                except Exception as api_error:
+                    logger.debug(f"Не удалось получить API данные: {api_error}")
+        
+        return {
+            "success": True,
+            "hotel_type": hotel_type_info,
+            "tour_index": tour_index,
+            "detailed_tour": detailed_tour,
+            "structure_info": {
+                "hotel_fields": ["hotelcode", "hotelname", "hotelstars", "hotelrating", "countryname", "regionname"],
+                "tour_fields": ["operatorname", "flydate", "nights", "price", "meal", "placement"],
+                "enhanced_fields": ["hoteldescriptions", "tours"],
+                "compatibility": "Структура совместима с результатами обычного поиска TourVisor"
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения детального preview: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка получения детальной информации: {str(e)}"
         )

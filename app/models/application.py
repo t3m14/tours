@@ -11,6 +11,9 @@ class ApplicationRequest(BaseModel):
     communication_time: Optional[str] = Field(None, max_length=100, description="Удобное время для связи")
     description: Optional[str] = Field(None, max_length=1000, description="Дополнительное описание")
     
+    # НОВОЕ ПОЛЕ для HTML-контента
+    body: Optional[str] = Field(None, max_length=10000, description="HTML-контент заявки для рендеринга в письме")
+    
     class Config:
         schema_extra = {
             "example": {
@@ -20,7 +23,8 @@ class ApplicationRequest(BaseModel):
                 "email": "ivan@example.com",
                 "nearest_office": "Москва, Тверская 1",
                 "communication_time": "с 10:00 до 18:00",
-                "description": "Интересует отдых в Турции на 7 ночей"
+                "description": "Интересует отдых в Турции на 7 ночей",
+                "body": "<div><h3>Детали заявки</h3><p>Клиент интересуется турами в <strong>Турцию</strong></p><ul><li>Отель: 4-5 звезд</li><li>Питание: Все включено</li><li>Продолжительность: 7 ночей</li></ul></div>"
             }
         }
 
@@ -38,6 +42,7 @@ class Application(BaseModel):
     nearest_office: Optional[str] = None
     communication_time: Optional[str] = None
     description: Optional[str] = None
+    body: Optional[str] = None  # НОВОЕ ПОЛЕ для HTML-контента
     created_at: datetime
     status: str = "new"  # new, processed, completed
     

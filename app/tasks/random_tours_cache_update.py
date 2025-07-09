@@ -1,4 +1,4 @@
-# app/tasks/random_tours_cache_update.py - ИСПРАВЛЕННАЯ ВЕРСИЯ С АНГЛИЙСКИМИ НАЗВАНИЯМИ ТИПОВ ОТЕЛЕЙ
+# app/tasks/random_tours_cache_update.py - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ
 
 import asyncio
 import logging
@@ -13,71 +13,37 @@ from app.services.cache_service import cache_service
 from app.models.tour import RandomTourRequest
 from app.utils.logger import setup_logger
 import os
+
 logger = setup_logger(__name__)
 
 class RandomToursCacheUpdateService:
-    """Сервис для автоматического обновления кэша случайных туров с исправленной логикой получения реальных туров"""
+    """Сервис для автоматического обновления кэша случайных туров"""
     
     def __init__(self):
-        # Настройки из переменных окружения
-        import os
-        self.update_interval = int(os.getenv("RANDOM_TOURS_UPDATE_INTERVAL_HOURS", "12")) * 3600  # 12 часов по умолчанию
-        self.tours_per_type = int(os.getenv("RANDOM_TOURS_PER_TYPE", "8"))  # 8 туров на тип отеля
+        self.update_interval = int(os.getenv("RANDOM_TOURS_UPDATE_INTERVAL_HOURS", "12")) * 3600
+        self.tours_per_type = int(os.getenv("RANDOM_TOURS_PER_TYPE", "8"))
         self.generation_strategies = os.getenv("RANDOM_TOURS_STRATEGIES", "search,hot_tours,mock").split(",")
-        self.countries_to_update = os.getenv("RANDOM_TOURS_COUNTRIES", "1,2,4,9,8").split(",")  # Топ страны
+        self.countries_to_update = os.getenv("RANDOM_TOURS_COUNTRIES", "1,2,4,9,8").split(",")
         
-        # АНГЛИЙСКИЕ типы отелей с маппингом на API TourVisor
+        # Маппинг типов отелей
         self.hotel_types_mapping = {
-            "any": {
-                "display_name": "any", 
-                "api_param": None,  # Без фильтрации
-                "cache_key": "any"
-            },
-            "active": {
-                "display_name": "active",
-                "api_param": "active",  # TourVisor API: active
-                "cache_key": "active"
-            },
-            "relax": {
-                "display_name": "relax",
-                "api_param": "relax",  # TourVisor API: relax
-                "cache_key": "relax"
-            },
-            "family": {
-                "display_name": "family",
-                "api_param": "family",  # TourVisor API: family
-                "cache_key": "family"
-            },
-            "health": {
-                "display_name": "health",
-                "api_param": "health",  # TourVisor API: health
-                "cache_key": "health"
-            },
-            "city": {
-                "display_name": "city",
-                "api_param": "city",  # TourVisor API: city
-                "cache_key": "city"
-            },
-            "beach": {
-                "display_name": "beach",
-                "api_param": "beach",  # TourVisor API: beach
-                "cache_key": "beach"
-            },
-            "deluxe": {
-                "display_name": "deluxe",
-                "api_param": "deluxe",  # TourVisor API: deluxe
-                "cache_key": "deluxe"
-            }
+            "any": {"display_name": "any", "api_param": None, "cache_key": "any"},
+            "active": {"display_name": "active", "api_param": "active", "cache_key": "active"},
+            "relax": {"display_name": "relax", "api_param": "relax", "cache_key": "relax"},
+            "family": {"display_name": "family", "api_param": "family", "cache_key": "family"},
+            "health": {"display_name": "health", "api_param": "health", "cache_key": "health"},
+            "city": {"display_name": "city", "api_param": "city", "cache_key": "city"},
+            "beach": {"display_name": "beach", "api_param": "beach", "cache_key": "beach"},
+            "deluxe": {"display_name": "deluxe", "api_param": "deluxe", "cache_key": "deluxe"}
         }
 
-        # Состояние
         self.is_running = False
         self.last_update = None
         self.update_stats = {}
         self.current_hotel_type = None
         
         logger.info(f"🎲 Инициализация обновления случайных туров: интервал {self.update_interval//3600}ч, "
-                   f"{self.tours_per_type} туров на тип, типы отелей: {list(self.hotel_types_mapping.keys())}")
+                   f"{self.tours_per_type} туров на тип")
     
     async def start_scheduler(self):
         """Запуск планировщика автообновления случайных туров"""
@@ -86,48 +52,43 @@ class RandomToursCacheUpdateService:
             return
             
         self.is_running = True
-        logger.info(f"🎲 Запуск планировщика обновления случайных туров (интервал: {self.update_interval//3600}ч)")
+        logger.info(f"🎲 Запуск планировщика обновления случайных туров")
         
-        # Автостарт - запускаем первое обновление
+        # Автостарт
         auto_start = os.getenv("RANDOM_TOURS_AUTO_START", "true").lower() == "true"
         if auto_start:
-            logger.info("🚀 Автостарт включен - запуск первого обновления случайных туров")
+            logger.info("🚀 Автостарт включен - запуск первого обновления")
             try:
                 await self._run_update_cycle()
             except Exception as e:
-                logger.error(f"❌ Ошибка в автостарте случайных туров: {e}")
+                logger.error(f"❌ Ошибка в автостарте: {e}")
         
         while self.is_running:
             try:
                 await asyncio.sleep(self.update_interval)
-                
-                if self.is_running:  # Проверяем снова после ожидания
+                if self.is_running:
                     await self._run_update_cycle()
                 
             except asyncio.CancelledError:
-                logger.info("🛑 Планировщик обновления случайных туров остановлен")
+                logger.info("🛑 Планировщик остановлен")
                 break
             except Exception as e:
-                logger.error(f"❌ Ошибка в планировщике случайных туров: {e}")
-                logger.error(traceback.format_exc())
-                # Ждем 1 час перед повтором при ошибке
+                logger.error(f"❌ Ошибка в планировщике: {e}")
                 await asyncio.sleep(3600)
     
     async def stop_scheduler(self):
         """Остановка планировщика"""
-        logger.info("🛑 Остановка планировщика обновления случайных туров")
+        logger.info("🛑 Остановка планировщика")
         self.is_running = False
     
     async def _run_update_cycle(self):
-        """Выполнение одного цикла обновления случайных туров"""
+        """Выполнение одного цикла обновления"""
         start_time = datetime.now()
-        logger.info(f"🎲 НАЧАЛО ЦИКЛА ОБНОВЛЕНИЯ СЛУЧАЙНЫХ ТУРОВ ({start_time.strftime('%Y-%m-%d %H:%M:%S')})")
+        logger.info(f"🎲 НАЧАЛО ЦИКЛА ОБНОВЛЕНИЯ ({start_time.strftime('%Y-%m-%d %H:%M:%S')})")
         
         try:
-            # Определяем типы отелей для обновления
             hotel_types = list(self.hotel_types_mapping.keys())
             
-            # Статистика обновления
             update_stats = {
                 "start_time": start_time,
                 "total_hotel_types": len(hotel_types),
@@ -152,7 +113,6 @@ class RandomToursCacheUpdateService:
                     logger.info(f"🏨 Обновление туров для типа: {display_name}")
                     self.current_hotel_type = display_name
                     
-                    # Генерируем туры для данного типа
                     result = await self._update_tours_for_hotel_type(hotel_type_key, hotel_type_info)
                     
                     update_stats["processed_types"] += 1
@@ -164,7 +124,6 @@ class RandomToursCacheUpdateService:
                         update_stats["real_api_tours"] += result.get("real_tours", 0)
                         update_stats["mock_tours"] += result.get("mock_tours", 0)
                         
-                        # Статистика по стратегиям
                         for strategy, count in result.get("strategies_used", {}).items():
                             update_stats["strategies_used"][strategy] = update_stats["strategies_used"].get(strategy, 0) + count
                     else:
@@ -172,10 +131,8 @@ class RandomToursCacheUpdateService:
                     
                     update_stats["hotel_types_details"][display_name] = result
                     
-                    logger.info(f"✅ {display_name}: {result['tours_count']} туров за {result['execution_time_seconds']:.1f}с "
-                              f"(реальных: {result.get('real_tours', 0)}, mock: {result.get('mock_tours', 0)})")
+                    logger.info(f"✅ {display_name}: {result['tours_count']} туров за {result['execution_time_seconds']:.1f}с")
                     
-                    # Пауза между типами отелей
                     await asyncio.sleep(5)
                     
                 except Exception as e:
@@ -185,9 +142,7 @@ class RandomToursCacheUpdateService:
                         "success": False,
                         "error": str(e),
                         "tours_count": 0,
-                        "execution_time_seconds": 0,
-                        "real_tours": 0,
-                        "mock_tours": 0
+                        "execution_time_seconds": 0
                     }
                     logger.error(f"❌ Ошибка обновления туров для {hotel_type_info['display_name']}: {e}")
             
@@ -204,23 +159,19 @@ class RandomToursCacheUpdateService:
             self.update_stats = update_stats
             self.current_hotel_type = None
             
-            # Сохраняем статистику в кэш
             await cache_service.set("random_tours_cache_update_stats", update_stats, ttl=48*3600)
             
-            logger.info(f"🏁 ЦИКЛ ОБНОВЛЕНИЯ СЛУЧАЙНЫХ ТУРОВ ЗАВЕРШЕН")
-            logger.info(f"📊 Итого: {update_stats['successful_types']}/{len(hotel_types)} типов отелей, "
+            logger.info(f"🏁 ЦИКЛ ЗАВЕРШЕН: {update_stats['successful_types']}/{len(hotel_types)} типов, "
                        f"{update_stats['total_tours_generated']} туров, "
-                       f"время: {execution_time.total_seconds():.1f} сек, "
-                       f"успешность: {update_stats['success_rate']:.1f}%, "
-                       f"реальные туры: {update_stats['real_tours_percentage']:.1f}%")
+                       f"время: {execution_time.total_seconds():.1f} сек")
             
         except Exception as e:
-            logger.error(f"❌ Критическая ошибка в цикле обновления случайных туров: {e}")
+            logger.error(f"❌ Критическая ошибка в цикле: {e}")
             logger.error(traceback.format_exc())
             raise
     
     async def _update_tours_for_hotel_type(self, hotel_type_key: str, hotel_type_info: Dict) -> Dict[str, Any]:
-        """Обновление туров для конкретного типа отеля с использованием API фильтрации"""
+        """Обновление туров для конкретного типа отеля"""
         start_time = datetime.now()
         
         try:
@@ -228,13 +179,13 @@ class RandomToursCacheUpdateService:
             api_param = hotel_type_info["api_param"]
             cache_key_suffix = hotel_type_info["cache_key"]
             
-            logger.debug(f"🎲 Генерация {self.tours_per_type} туров для типа: {display_name} (API: {api_param})")
+            logger.debug(f"🎲 Генерация {self.tours_per_type} туров для типа: {display_name}")
             
-            # Очищаем старый кэш для этого типа отеля
+            # Очищаем старый кэш
             cache_key = f"random_tours_{cache_key_suffix}"
             await cache_service.delete(cache_key)
             
-            # Генерируем туры через улучшенную логику с API фильтрацией
+            # Генерируем туры
             tours_result, api_calls_made = await self._generate_tours_with_api_filter(
                 hotel_type_key, api_param, display_name
             )
@@ -257,8 +208,12 @@ class RandomToursCacheUpdateService:
                     else:
                         mock_tours += 1
                 
+                # Добавляем поля hoteldescriptions и tours
+                for tour in tours_result:
+                    await self._enrich_tour_with_details(tour)
+                
                 # Сохраняем в кэш
-                await cache_service.set(cache_key, tours_result, ttl=self.update_interval + 3600)  # TTL = интервал + 1 час
+                await cache_service.set(cache_key, tours_result, ttl=self.update_interval + 3600)
                 
                 result = {
                     "success": True,
@@ -267,17 +222,9 @@ class RandomToursCacheUpdateService:
                     "real_tours": real_tours,
                     "mock_tours": mock_tours,
                     "api_calls_made": api_calls_made,
-                    "quality_stats": {
-                        "real_tours": real_tours,
-                        "mock_tours": mock_tours,
-                        "real_tours_percentage": f"{(real_tours/len(tours_result)*100):.1f}%"
-                    },
                     "strategies_used": strategies_used,
                     "hotel_type_api_param": api_param
                 }
-                
-                logger.debug(f"✅ Сгенерировано {len(tours_result)} туров для {display_name}: "
-                           f"{real_tours} реальных, {mock_tours} mock, API вызовов: {api_calls_made}")
                 
                 return result
             else:
@@ -308,67 +255,44 @@ class RandomToursCacheUpdateService:
             }
     
     async def _generate_tours_with_api_filter(self, hotel_type_key: str, api_param: Optional[str], display_name: str) -> tuple[List[Dict], int]:
-        """
-        ИСПРАВЛЕННАЯ генерация туров с использованием API фильтрации по типам отелей
-        
-        Args:
-            hotel_type_key: Ключ типа отеля для внутреннего использования
-            api_param: Параметр для API TourVisor (hoteltypes)
-            display_name: Отображаемое название типа отеля
-            
-        Returns:
-            tuple: (список туров, количество API вызовов)
-        """
+        """Генерация туров с использованием API фильтрации по типам отелей"""
         try:
             from app.core.tourvisor_client import tourvisor_client
-            from datetime import datetime, timedelta
             
             tours_generated = []
             api_calls_made = 0
             
-            # СТРАТЕГИЯ 1: ПОПРОБУЕМ ПОИСК БЕЗ ФИЛЬТРА СНАЧАЛА (для отладки)
+            # СТРАТЕГИЯ 1: Поиск через API
             if "search" in self.generation_strategies:
                 logger.debug(f"🔍 Стратегия поиска для {display_name}")
                 
                 try:
-                    # Случайная страна из списка
                     country_id = random.choice([int(c) for c in self.countries_to_update])
-                    
-                    # Даты поиска: завтра + неделя
                     tomorrow = datetime.now() + timedelta(days=1)
                     week_later = datetime.now() + timedelta(days=8)
                     
-                    # ИСПРАВЛЕННЫЕ параметры поиска
                     search_params = {
-                        "departure": random.choice([1, 2, 3, 4, 5]),  # Случайный город вылета
+                        "departure": random.choice([1, 2, 3, 4, 5]),
                         "country": country_id,
                         "datefrom": tomorrow.strftime("%d.%m.%Y"),
                         "dateto": week_later.strftime("%d.%m.%Y"),
                         "nightsfrom": 7,
                         "nightsto": 10,
                         "adults": 2,
-                        "format": "json",  # ИЗМЕНЕНО: JSON вместо XML для лучшей совместимости
-                        "onpage": 20       # УМЕНЬШЕНО: меньше результатов для стабильности
+                        "format": "json",
+                        "onpage": 20
                     }
                     
-                    # Добавляем фильтр ТОЛЬКО если он существует и мы НЕ тестируем базовый поиск
                     if api_param and hotel_type_key != "any":
                         search_params["hoteltypes"] = api_param
-                        logger.debug(f"🎯 Добавлен фильтр hoteltypes={api_param}")
                     
-                    logger.info(f"📝 Параметры поиска для {display_name}: {search_params}")
-                    
-                    # Запускаем поиск
                     request_id = await tourvisor_client.search_tours(search_params)
                     api_calls_made += 1
                     
                     if request_id:
-                        logger.info(f"🚀 Запущен поиск {request_id} для {display_name}")
-                        
-                        # УВЕЛИЧЕННОЕ время ожидания и улучшенная логика
-                        max_wait_time = 120  # 2 минуты вместо 60 секунд
+                        # Ждем результатов
+                        max_wait_time = 60
                         start_wait = datetime.now()
-                        last_hotels_count = 0
 
                         while (datetime.now() - start_wait).total_seconds() < max_wait_time:
                             try:
@@ -381,74 +305,42 @@ class RandomToursCacheUpdateService:
                                     hotels_found = int(status_data.get("hotelsfound", 0))
                                     progress = int(status_data.get("progress", 0))
                                     
-                                    logger.info(f"📊 Поиск {request_id} для {display_name}: {state}, {progress}%, отелей: {hotels_found}")
-                                    
-                                    # УЛУЧШЕННАЯ ЛОГИКА ЗАВЕРШЕНИЯ:
-                                    if state == "finished":
-                                        if hotels_found > 0:
-                                            logger.info(f"✅ Поиск {display_name} завершен с {hotels_found} отелями")
-                                            break
-                                        else:
-                                            logger.warning(f"⚠️ Поиск {display_name} завершен, но отелей не найдено")
-                                            break
-                                            
-                                    elif hotels_found >= 3 and progress >= 30:
-                                        # СНИЖЕН порог: если есть хотя бы 3 отеля и прогресс >= 30%
-                                        logger.info(f"📊 Поиск {display_name}: достаточно результатов ({hotels_found} отелей при {progress}%)")
+                                    if state == "finished" or (hotels_found >= 3 and progress >= 30):
                                         break
                                         
-                                    elif state == "error":
-                                        logger.warning(f"❌ Ошибка поиска для {display_name}")
+                                    if state == "error":
                                         break
-                                    
-                                    # Если количество отелей не растет 30+ секунд, прерываем
-                                    if hotels_found == last_hotels_count and (datetime.now() - start_wait).total_seconds() > 30:
-                                        if hotels_found > 0:
-                                            logger.info(f"⏰ Поиск {display_name} застопорился на {hotels_found} отелях, завершаем")
-                                            break
-                                    
-                                    last_hotels_count = hotels_found
                                 
-                                await asyncio.sleep(5)  # УВЕЛИЧЕНА пауза до 5 секунд
+                                await asyncio.sleep(3)
                                 
                             except Exception as e:
-                                logger.warning(f"⚠️ Ошибка проверки статуса для {display_name}: {e}")
-                                await asyncio.sleep(5)
+                                logger.warning(f"⚠️ Ошибка проверки статуса: {e}")
+                                await asyncio.sleep(3)
                         
-                        # Получаем результаты независимо от статуса
+                        # Получаем результаты
                         try:
-                            logger.info(f"📥 Получаем результаты поиска {request_id}")
                             search_results = await tourvisor_client.get_search_results(request_id)
                             api_calls_made += 1
                             
-                            # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ СТРУКТУРЫ ОТВЕТА
-                            logger.info(f"🔍 СТРУКТУРА ОТВЕТА для {display_name}:")
-                            logger.info(f"📊 Ключи верхнего уровня: {list(search_results.keys())}")
-                            logger.info(f"📄 Первые 1000 символов: {json.dumps(search_results, ensure_ascii=False)[:1000]}")
-                            
                             if search_results:
                                 tours_from_search = await self._extract_tours_from_search_results(
-                                    search_results, self.tours_per_type, display_name
+                                    search_results, self.tours_per_type, display_name, search_params
                                 )
                                 tours_generated.extend(tours_from_search)
-                                logger.info(f"✅ Поиск {display_name}: извлечено {len(tours_from_search)} туров через API")
                                 
                         except Exception as results_error:
-                            logger.error(f"❌ Ошибка получения результатов для {display_name}: {results_error}")
+                            logger.error(f"❌ Ошибка получения результатов: {results_error}")
                     
                 except Exception as e:
                     logger.warning(f"⚠️ Ошибка поиска для {display_name}: {e}")
-                    logger.warning(f"📄 Трейсбек: {traceback.format_exc()}")
             
-            # СТРАТЕГИЯ 2: Горящие туры (если не хватает туров)
+            # СТРАТЕГИЯ 2: Горящие туры
             if len(tours_generated) < self.tours_per_type and "hot_tours" in self.generation_strategies:
-                logger.debug(f"🔥 Стратегия горящих туров для {display_name}")
-                
                 try:
                     country_id = random.choice([int(c) for c in self.countries_to_update])
                     
                     hot_tours_data = await tourvisor_client.get_hot_tours(
-                        city=1,  # Москвы
+                        city=1,
                         items=min(20, self.tours_per_type * 2),
                         countries=str(country_id)
                     )
@@ -459,190 +351,103 @@ class RandomToursCacheUpdateService:
                             hot_tours_data, self.tours_per_type - len(tours_generated), display_name
                         )
                         tours_generated.extend(tours_from_hot)
-                        logger.info(f"🔥 Горящие туры {display_name}: получено {len(tours_from_hot)} туров")
                 
                 except Exception as e:
-                    logger.warning(f"⚠️ Ошибка получения горящих туров для {display_name}: {e}")
+                    logger.warning(f"⚠️ Ошибка получения горящих туров: {e}")
             
-            # СТРАТЕГИЯ 3: Mock туры (если все еще не хватает)
+            # СТРАТЕГИЯ 3: Mock туры
             if len(tours_generated) < self.tours_per_type and "mock" in self.generation_strategies:
                 needed = self.tours_per_type - len(tours_generated)
-                logger.debug(f"🎭 Стратегия mock туров для {display_name}: нужно {needed}")
-                
                 mock_tours = await self._generate_mock_tours(needed, hotel_type_key, display_name)
                 tours_generated.extend(mock_tours)
-                logger.info(f"🎭 Mock туры {display_name}: сгенерировано {len(mock_tours)} туров")
             
             # Ограничиваем до нужного количества
             tours_generated = tours_generated[:self.tours_per_type]
             
-            logger.info(f"📊 ИТОГО для {display_name}: {len(tours_generated)} туров, API вызовов: {api_calls_made}")
             return tours_generated, api_calls_made
             
         except Exception as e:
             logger.error(f"❌ Критическая ошибка генерации для {display_name}: {e}")
-            logger.error(f"📄 Трейсбек: {traceback.format_exc()}")
             return [], api_calls_made
     
-    async def _extract_tours_from_search_results(self, search_results: Dict, limit: int, hotel_type: str) -> List[Dict]:
-        """ИСПРАВЛЕННОЕ извлечение туров из результатов поиска с детальной диагностикой"""
+    async def _extract_tours_from_search_results(self, search_results: Dict, limit: int, hotel_type: str, search_params: Dict = None) -> List[Dict]:
+        """Извлечение туров из результатов поиска"""
         try:
             tours = []
             
-            logger.info(f"🔍 АНАЛИЗ СТРУКТУРЫ РЕЗУЛЬТАТОВ для {hotel_type}")
-            logger.debug(f"📊 Полный ответ: {json.dumps(search_results, ensure_ascii=False, indent=2)[:2000]}")
-            
-            # ИСПРАВЛЕННАЯ ЛОГИКА ПОИСКА ОТЕЛЕЙ
-            hotels = []
-            
-            # Метод 1: Прямой поиск в разных местах структуры
-            search_paths = [
-                ["data", "result", "hotel"],      # Стандартная структура
-                ["data", "hotel"],                # Прямо в data
-                ["hotel"],                        # В корне
-                ["result", "hotel"],              # Без data
-                ["data", "result", "hotels"],     # Множественное число
-                ["data", "hotels"],               # Множественное в data
-                ["hotels"]                        # Множественное в корне
-            ]
-            
-            for path in search_paths:
-                try:
-                    current = search_results
-                    for key in path:
-                        if isinstance(current, dict) and key in current:
-                            current = current[key]
-                        else:
-                            break
-                    else:
-                        # Если дошли до конца пути успешно
-                        if current:
-                            hotels = current if isinstance(current, list) else [current]
-                            logger.info(f"🏨 Найдены отели по пути: {' -> '.join(path)} ({len(hotels)} отелей)")
-                            break
-                except Exception as path_error:
-                    logger.debug(f"⚠️ Ошибка поиска по пути {path}: {path_error}")
-                    continue
-            
-            # Метод 2: Рекурсивный поиск если не нашли
-            if not hotels:
-                logger.warning(f"⚠️ Отели не найдены стандартными путями, пробуем рекурсивный поиск")
-                hotels = self._recursive_find_hotels(search_results)
-                if hotels:
-                    logger.info(f"🏨 Найдены отели рекурсивным поиском: {len(hotels)} отелей")
+            # Поиск отелей в результатах
+            hotels = self._find_hotels_in_results(search_results)
             
             if not hotels:
-                logger.error(f"❌ Отели НЕ НАЙДЕНЫ в результатах для {hotel_type}")
-                logger.error(f"🔍 Доступные ключи в ответе: {self._get_all_keys_recursive(search_results)}")
+                logger.warning(f"❌ Отели не найдены в результатах для {hotel_type}")
                 return []
-            
-            logger.info(f"🏨 Найдено {len(hotels)} отелей для обработки")
             
             # Извлекаем туры из отелей
             for i, hotel in enumerate(hotels[:limit]):
                 try:
                     if not isinstance(hotel, dict):
-                        logger.warning(f"⚠️ Отель {i+1} не является словарем: {type(hotel)}")
                         continue
                     
-                    hotel_name = hotel.get("hotelname", hotel.get("name", f"Hotel_{i+1}"))
-                    logger.debug(f"🏨 Обрабатываем отель {i+1}: {hotel_name}")
-                    
-                    # Ищем туры в отеле разными способами
                     hotel_tours = self._extract_tours_from_hotel(hotel)
                     
                     if hotel_tours:
-                        logger.debug(f"🎫 Отель {hotel_name}: найдено {len(hotel_tours)} туров")
-                        
-                        # Берем первый валидный тур
                         for tour in hotel_tours:
                             try:
-                                tour_data = self._build_tour_data(hotel, tour, hotel_type)
+                                tour_data = self._build_tour_data(hotel, tour, hotel_type, search_params)
                                 if tour_data:
                                     tours.append(tour_data)
-                                    logger.info(f"✅ Извлечен тур: {tour_data['hotel_name']} - {tour_data['price']} руб")
-                                    break  # Берем только первый валидный тур из отеля
+                                    break
                             except Exception as tour_build_error:
-                                logger.warning(f"⚠️ Ошибка создания тура: {tour_build_error}")
                                 continue
-                    else:
-                        logger.debug(f"⚠️ В отеле {hotel_name} нет туров")
                     
                     if len(tours) >= limit:
                         break
                         
                 except Exception as hotel_error:
-                    logger.warning(f"⚠️ Ошибка обработки отеля {i+1}: {hotel_error}")
                     continue
             
-            logger.info(f"🎯 ИТОГО извлечено {len(tours)} реальных туров для {hotel_type}")
             return tours
             
         except Exception as e:
-            logger.error(f"❌ Критическая ошибка извлечения туров для {hotel_type}: {e}")
-            logger.error(f"📄 Трейсбек: {traceback.format_exc()}")
+            logger.error(f"❌ Ошибка извлечения туров для {hotel_type}: {e}")
             return []
     
-    def _recursive_find_hotels(self, data, depth=0, max_depth=5):
-        """Рекурсивный поиск отелей в структуре данных"""
-        if depth > max_depth:
-            return []
-        
+    def _find_hotels_in_results(self, search_results: Dict) -> List[Dict]:
+        """Поиск отелей в результатах"""
         hotels = []
         
-        if isinstance(data, dict):
-            # Проверяем, является ли текущий объект отелем
-            if self._looks_like_hotel(data):
-                return [data]
-            
-            # Ищем в дочерних элементах
-            for key, value in data.items():
-                if key.lower() in ['hotel', 'hotels']:
-                    if isinstance(value, list):
-                        hotels.extend(value)
-                    elif value:
-                        hotels.append(value)
-                else:
-                    child_hotels = self._recursive_find_hotels(value, depth + 1, max_depth)
-                    hotels.extend(child_hotels)
+        # Различные пути к отелям
+        search_paths = [
+            ["data", "result", "hotel"],
+            ["data", "hotel"],
+            ["hotel"],
+            ["result", "hotel"],
+            ["data", "result", "hotels"],
+            ["data", "hotels"],
+            ["hotels"]
+        ]
         
-        elif isinstance(data, list):
-            for item in data:
-                child_hotels = self._recursive_find_hotels(item, depth + 1, max_depth)
-                hotels.extend(child_hotels)
+        for path in search_paths:
+            try:
+                current = search_results
+                for key in path:
+                    if isinstance(current, dict) and key in current:
+                        current = current[key]
+                    else:
+                        break
+                else:
+                    if current:
+                        hotels = current if isinstance(current, list) else [current]
+                        break
+            except Exception:
+                continue
         
         return hotels
-    
-    def _looks_like_hotel(self, data):
-        """Проверяет, похож ли объект на отель"""
-        if not isinstance(data, dict):
-            return False
-        
-        hotel_indicators = ['hotelname', 'hotelcode', 'hotelstars', 'countryname', 'regionname']
-        return any(key in data for key in hotel_indicators)
-    
-    def _get_all_keys_recursive(self, data, depth=0, max_depth=3):
-        """Получает все ключи из структуры данных рекурсивно"""
-        if depth > max_depth:
-            return set()
-        
-        keys = set()
-        
-        if isinstance(data, dict):
-            keys.update(data.keys())
-            for value in data.values():
-                keys.update(self._get_all_keys_recursive(value, depth + 1, max_depth))
-        elif isinstance(data, list) and data:
-            for item in data[:3]:  # Проверяем только первые 3 элемента
-                keys.update(self._get_all_keys_recursive(item, depth + 1, max_depth))
-        
-        return keys
     
     def _extract_tours_from_hotel(self, hotel):
         """Извлекает туры из данных отеля"""
         hotel_tours = []
         
-        # Различные пути к турам
         tour_paths = [
             ["tours", "tour"],
             ["tour"],
@@ -660,7 +465,6 @@ class RandomToursCacheUpdateService:
                     else:
                         break
                 else:
-                    # Если дошли до конца пути
                     if current:
                         if isinstance(current, list):
                             hotel_tours.extend(current)
@@ -675,97 +479,16 @@ class RandomToursCacheUpdateService:
     def _build_tour_data(self, hotel, tour, hotel_type, search_params=None):
         """Создает объект тура из данных отеля и тура"""
         try:
-            # Проверяем наличие цены
             price = tour.get("price", 0)
             if not price or (isinstance(price, (str, int, float)) and float(price) <= 0):
-                logger.debug(f"⚠️ Тур без валидной цены: {price}")
                 return None
             
-            # Безопасно извлекаем данные
             def safe_get(obj, key, default="", convert_func=str):
                 try:
                     value = obj.get(key, default)
                     return convert_func(value) if value not in [None, "", 0] else convert_func(default)
                 except:
                     return convert_func(default)
-            
-            # Функция для получения названия города по коду
-            def get_city_name_by_code(city_code):
-                if not city_code:
-                    return "Москвы"
-                
-                try:
-                    city_code = int(city_code)
-                except (ValueError, TypeError):
-                    return "Москвы"
-                city_map = {
-                    1: "из Москвы", 2: "из Перми", 3: "из Екатеринбурга", 4: "из Уфы",
-                    5: "из Санкт-Петербурга", 6: "из Казани", 7: "из Нижнего Новгорода",
-                    8: "из Самары", 9: "из Ростова-на-Дону", 10: "из Краснодара",
-                    11: "из Волгограда", 12: "из Воронежа", 13: "из Саратова",
-                    14: "из Тольятти", 15: "из Ижевска"
-                }
-                return city_map.get(city_code, "Москвы")
-            
-            # ПРАВИЛЬНОЕ ПОЛУЧЕНИЕ departure
-            # Приоритет: из search_params -> из hotel -> из tour -> маппинг по коду -> fallback
-            departure_city = None
-            if search_params and search_params.get("departure"):
-                departure_city = get_city_name_by_code(search_params["departure"])
-            elif hotel.get("departurename"):
-                departure_city = safe_get(hotel, "departurename")
-            elif tour.get("departurename"):  
-                departure_city = safe_get(tour, "departurename")
-            elif hotel.get("departurecode"):
-                departure_city = get_city_name_by_code(hotel.get("departurecode"))
-            elif tour.get("departurecode"):
-                departure_city = get_city_name_by_code(tour.get("departurecode"))
-            else:
-                departure_city = "Москвы"  # Fallback
-
-           # Словарь склонений городов
-            declensions = {
-                "Москва": "из Москвы",
-                "Москвы": "из Москвы",
-                "Санкт-Петербург": "из Санкт-Петербурга", 
-                "Пермь": "из Перми",
-                "Саратов": "из Саратова",
-                "Екатеринбург": "из Екатеринбурга",
-                "Казань": "из Казани",
-                "Новосибирск": "из Новосибирска",
-                "Нижний Новгород": "из Нижнего Новгорода",
-                "Челябинск": "из Челябинска",
-                "Самара": "из Самары",
-                "Ростов-на-Дону": "из Ростова-на-Дону",
-                "Уфа": "из Уфы",
-                "Красноярск": "из Красноярска",
-                "Воронеж": "из Воронежа",
-                "Волгоград": "из Волгограда",
-                "Тольятти": "из Тольятти",
-                "Ижевск": "из Ижевска",
-                "Краснодар": "из Краснодара"
-            }
-            
-            # Приводим город к правильному склонению
-            departure_from = departure_city
-            if departure_city.startswith("из "):
-                departure_from = departure_city
-            else:
-                # Убираем "из " если оно есть в начале
-                clean_city = departure_city.replace("из ", "")
-                # Проверяем есть ли город в словаре склонений
-                if clean_city in declensions:
-                    departure_from = declensions[clean_city]
-                else:
-                    departure_from = f"из {clean_city}"
-
-            # ПРАВИЛЬНОЕ ПОЛУЧЕНИЕ seadistance
-            # seadistance всегда находится в данных отеля, не тура
-            seadistance = (
-                safe_get(hotel, "seadistance", 0, int) or 
-                safe_get(tour, "seadistance", 0, int) or
-                random.choice([50, 100, 150, 200, 300, 500])  # Случайное значение если нет данных
-            )
             
             tour_data = {
                 "hotel_name": safe_get(hotel, "hotelname"),
@@ -787,26 +510,15 @@ class RandomToursCacheUpdateService:
                 "hotel_type": hotel_type,
                 "picture_link": safe_get(hotel, "picturelink"),
                 "search_source": "api_search_with_filter",
-                
-                # ИСПРАВЛЕННЫЕ ПОЛЯ:
-                "departure": departure_city,  # Правильно определенный город
-                "seadistance": seadistance,   # Расстояние до моря из отеля
+                "seadistance": safe_get(hotel, "seadistance", random.choice([50, 100, 150, 200]), int),
                 
                 # Дополнительные поля для совместимости
-                "departurename": departure_city,  # Дублируем для совместимости  
-                "departurecode": str(search_params.get("departure", 1)) if search_params else "1",
-                "departurefromname": departure_from,  # Правильно склоненное название города
-                "countrycode": str(safe_get(hotel, "countrycode", search_params.get("country", 1) if search_params else 1)),
-                "countryname": safe_get(hotel, "countryname"),
-                "operatorcode": safe_get(tour, "operatorcode", ""),
                 "hotelcode": safe_get(hotel, "hotelcode", ""),
-                "hotelregioncode": safe_get(hotel, "regioncode", ""),
-                "hotelregionname": safe_get(hotel, "regionname"),
-                "hotelpicture": safe_get(hotel, "picturelink"),
                 "fulldesclink": safe_get(hotel, "fulldesclink"),
+                "reviewlink": safe_get(hotel, "reviewlink"),
             }
             
-            # Валидация обязательных полей
+            # Валидация
             if not tour_data["hotel_name"] or tour_data["price"] <= 0:
                 return None
             
@@ -815,6 +527,7 @@ class RandomToursCacheUpdateService:
         except Exception as e:
             logger.warning(f"⚠️ Ошибка создания тура: {e}")
             return None
+    
     async def _extract_tours_from_hot_tours(self, hot_tours_data: Dict, limit: int, hotel_type: str) -> List[Dict]:
         """Извлечение туров из горящих туров"""
         try:
@@ -842,14 +555,15 @@ class RandomToursCacheUpdateService:
                         "generation_strategy": "hot_tours",
                         "hotel_type": hotel_type,
                         "picture_link": tour_item.get("picture", ""),
-                        "search_source": "hot_tours"
+                        "search_source": "hot_tours",
+                        "hotelcode": tour_item.get("hotelcode", ""),
+                        "seadistance": random.choice([50, 100, 150, 200, 300])
                     }
                     
                     if tour_data["price"] > 0 and tour_data["hotel_name"]:
                         tours.append(tour_data)
                     
                 except Exception as e:
-                    logger.warning(f"⚠️ Ошибка обработки горящего тура: {e}")
                     continue
             
             return tours
@@ -863,7 +577,6 @@ class RandomToursCacheUpdateService:
         try:
             tours = []
             
-            # Данные для генерации mock туров с английскими ключами
             mock_data_by_type = {
                 "any": {
                     "hotels": ["Sunset Resort", "Ocean View Hotel", "Paradise Beach", "Golden Sands"],
@@ -871,46 +584,45 @@ class RandomToursCacheUpdateService:
                     "regions": ["Хургада", "Анталья", "Пхукет", "Дубай"]
                 },
                 "active": {
-                    "hotels": ["Adventure Resort", "Active Sports Hotel", "Mountain View Resort", "Extreme Hotel"],
+                    "hotels": ["Adventure Resort", "Active Sports Hotel", "Mountain View Resort"],
                     "price_range": (30000, 90000),
-                    "regions": ["Анталья", "Красная Поляна", "Буковель", "Альпы"]
+                    "regions": ["Анталья", "Красная Поляна", "Буковель"]
                 },
                 "relax": {
-                    "hotels": ["Spa Resort", "Wellness Hotel", "Zen Garden Resort", "Tranquil Waters"],
+                    "hotels": ["Spa Resort", "Wellness Hotel", "Zen Garden Resort"],
                     "price_range": (40000, 120000),
-                    "regions": ["Карловы Вары", "Баден-Баден", "Мариенбад", "Термальные источники"]
+                    "regions": ["Карловы Вары", "Баден-Баден", "Мариенбад"]
                 },
                 "family": {
-                    "hotels": ["Family Resort", "Kids Club Hotel", "Happy Family Resort", "Children Paradise"],
+                    "hotels": ["Family Resort", "Kids Club Hotel", "Happy Family Resort"],
                     "price_range": (35000, 95000),
-                    "regions": ["Анталья", "Крит", "Кипр", "Болгария"]
+                    "regions": ["Анталья", "Крит", "Кипр"]
                 },
                 "health": {
-                    "hotels": ["Health Resort", "Medical Spa", "Healing Waters Resort", "Wellness Center"],
+                    "hotels": ["Health Resort", "Medical Spa", "Healing Waters Resort"],
                     "price_range": (50000, 150000),
-                    "regions": ["Карловы Вары", "Железноводск", "Ессентуки", "Кисловодск"]
+                    "regions": ["Карловы Вары", "Железноводск", "Ессентуки"]
                 },
                 "city": {
-                    "hotels": ["City Hotel", "Metropolitan Resort", "Urban Oasis", "Downtown Hotel"],
+                    "hotels": ["City Hotel", "Metropolitan Resort", "Urban Oasis"],
                     "price_range": (20000, 70000),
-                    "regions": ["Стамбул", "Дубай", "Бангкок", "Сингапур"]
+                    "regions": ["Стамбул", "Дубай", "Бангкок"]
                 },
                 "beach": {
-                    "hotels": ["Beach Resort", "Seaside Hotel", "Ocean Paradise", "Tropical Beach"],
+                    "hotels": ["Beach Resort", "Seaside Hotel", "Ocean Paradise"],
                     "price_range": (30000, 100000),
-                    "regions": ["Хургада", "Пхукет", "Мальдивы", "Бали"]
+                    "regions": ["Хургада", "Пхукет", "Мальдивы"]
                 },
                 "deluxe": {
-                    "hotels": ["Luxury Resort", "Premium Hotel", "Elite Resort", "VIP Paradise"],
+                    "hotels": ["Luxury Resort", "Premium Hotel", "Elite Resort"],
                     "price_range": (80000, 250000),
-                    "regions": ["Мальдивы", "Сейшелы", "Сент-Барт", "Монако"]
+                    "regions": ["Мальдивы", "Сейшелы", "Монако"]
                 }
             }
 
             mock_config = mock_data_by_type.get(hotel_type_key, mock_data_by_type["any"])
             
             for i in range(count):
-                # Случайные данные на основе типа отеля
                 hotel_name = random.choice(mock_config["hotels"])
                 price = random.randint(mock_config["price_range"][0], mock_config["price_range"][1])
                 region = random.choice(mock_config["regions"])
@@ -937,6 +649,8 @@ class RandomToursCacheUpdateService:
                     "hotel_type": hotel_type_display,
                     "picture_link": f"/static/mockup_images/hotel_{hotel_type_key}_{i+1}.jpg",
                     "search_source": "mock_generation",
+                    "hotelcode": f"MOCK_{hotel_type_key.upper()}_{i+1:03d}",
+                    "seadistance": random.choice([50, 100, 150, 200, 300]),
                     "mock_type": hotel_type_key
                 }
                 
@@ -948,34 +662,114 @@ class RandomToursCacheUpdateService:
             logger.error(f"❌ Ошибка генерации mock туров для {hotel_type_display}: {e}")
             return []
     
+    async def _enrich_tour_with_details(self, tour: Dict) -> None:
+        """Обогащение тура деталями: hoteldescriptions и tours"""
+        try:
+            from app.core.tourvisor_client import tourvisor_client
+            
+            # Получаем код отеля
+            hotel_code = tour.get("hotelcode")
+            if not hotel_code or hotel_code.startswith("MOCK_"):
+                # Для mock туров создаем фиктивные данные
+                tour["hoteldescriptions"] = f"Описание отеля {tour.get('hotel_name', 'Unknown Hotel')}"
+                tour["tours"] = [{
+                    "tour_id": f"mock_tour_{random.randint(1000, 9999)}",
+                    "price": tour.get("price", 0),
+                    "nights": tour.get("nights", 7),
+                    "meal": tour.get("meal", "Завтрак"),
+                    "placement": tour.get("placement", "DBL")
+                }]
+                return
+            
+            try:
+                # Получаем детальную информацию об отеле
+                hotel_details = await tourvisor_client.get_hotel_info(hotel_code)
+                
+                if hotel_details and isinstance(hotel_details, dict):
+                    # Извлекаем описание отеля
+                    description = (
+                        hotel_details.get("hoteldescription", "") or
+                        hotel_details.get("description", "") or
+                        f"Отель {tour.get('hotel_name', 'Unknown Hotel')}"
+                    )
+                    tour["hoteldescriptions"] = description
+                    
+                    # Извлекаем информацию о турах
+                    tours_info = []
+                    
+                    # Основная информация о туре из текущих данных
+                    tour_info = {
+                        "tour_id": tour.get("tour_id", f"tour_{random.randint(1000, 9999)}"),
+                        "price": tour.get("price", 0),
+                        "nights": tour.get("nights", 7),
+                        "meal": tour.get("meal", "Завтрак"),
+                        "placement": tour.get("placement", "DBL"),
+                        "operator_name": tour.get("operator_name", ""),
+                        "fly_date": tour.get("fly_date", ""),
+                        "currency": tour.get("currency", "RUB")
+                    }
+                    tours_info.append(tour_info)
+                    
+                    tour["tours"] = tours_info
+                else:
+                    # Fallback данные
+                    tour["hoteldescriptions"] = f"Отель {tour.get('hotel_name', 'Unknown Hotel')}"
+                    tour["tours"] = [{
+                        "tour_id": f"tour_{random.randint(1000, 9999)}",
+                        "price": tour.get("price", 0),
+                        "nights": tour.get("nights", 7),
+                        "meal": tour.get("meal", "Завтрак"),
+                        "placement": tour.get("placement", "DBL")
+                    }]
+                    
+            except Exception as api_error:
+                logger.debug(f"Не удалось получить детали отеля {hotel_code}: {api_error}")
+                # Fallback данные
+                tour["hoteldescriptions"] = f"Отель {tour.get('hotel_name', 'Unknown Hotel')}"
+                tour["tours"] = [{
+                    "tour_id": f"tour_{random.randint(1000, 9999)}",
+                    "price": tour.get("price", 0),
+                    "nights": tour.get("nights", 7),
+                    "meal": tour.get("meal", "Завтрак"),
+                    "placement": tour.get("placement", "DBL")
+                }]
+                
+        except Exception as e:
+            logger.debug(f"Ошибка обогащения тура деталями: {e}")
+            # Минимальные fallback данные
+            tour["hoteldescriptions"] = f"Отель {tour.get('hotel_name', 'Unknown Hotel')}"
+            tour["tours"] = [{
+                "tour_id": f"tour_{random.randint(1000, 9999)}",
+                "price": tour.get("price", 0),
+                "nights": tour.get("nights", 7)
+            }]
+    
     # API методы для управления
     async def force_update_now(self) -> Dict[str, Any]:
-        """Принудительное обновление сейчас (для API)"""
+        """Принудительное обновление сейчас"""
         logger.info("🚀 Принудительное обновление случайных туров")
         
         try:
             await self._run_update_cycle()
             return {
                 "success": True,
-                "message": "Принудительное обновление случайных туров завершено успешно",
+                "message": "Принудительное обновление завершено успешно",
                 "stats": self.update_stats
             }
         except Exception as e:
-            logger.error(f"❌ Ошибка принудительного обновления случайных туров: {e}")
+            logger.error(f"❌ Ошибка принудительного обновления: {e}")
             return {
                 "success": False,
                 "error": str(e),
-                "message": "Ошибка при принудительном обновлении случайных туров"
+                "message": "Ошибка при принудительном обновлении"
             }
     
     async def get_update_status(self) -> Dict[str, Any]:
-        """Получение статуса обновления (для API)"""
+        """Получение статуса обновления"""
         try:
-            # Пытаемся получить статистику из кэша
             cached_stats = await cache_service.get("random_tours_cache_update_stats")
             
             if cached_stats:
-                # Дополняем актуальной информацией
                 status = {
                     "is_running": self.is_running,
                     "last_update": cached_stats.get("end_time"),
@@ -989,7 +783,6 @@ class RandomToursCacheUpdateService:
                     }
                 }
                 
-                # Вычисляем время следующего обновления
                 if self.last_update:
                     next_update = self.last_update + timedelta(seconds=self.update_interval)
                     status["next_update"] = next_update
@@ -1003,12 +796,12 @@ class RandomToursCacheUpdateService:
                     "next_update": None,
                     "current_hotel_type": self.current_hotel_type,
                     "update_stats": None,
-                    "message": "Еще не было обновлений случайных туров",
+                    "message": "Еще не было обновлений",
                     "hotel_types_supported": list(self.hotel_types_mapping.keys())
                 }
                 
         except Exception as e:
-            logger.error(f"❌ Ошибка получения статуса случайных туров: {e}")
+            logger.error(f"❌ Ошибка получения статуса: {e}")
             return {
                 "error": str(e),
                 "is_running": self.is_running
@@ -1031,7 +824,7 @@ class RandomToursCacheUpdateService:
                 except Exception as e:
                     logger.warning(f"⚠️ Не удалось очистить ключ {cache_key}: {e}")
             
-            # Также очищаем общий кэш случайных туров
+            # Очищаем общий кэш
             general_keys = ["random_tours", "random_tours_stats", "random_tours_cache_update_stats"]
             for key in general_keys:
                 try:
@@ -1042,13 +835,13 @@ class RandomToursCacheUpdateService:
             
             return {
                 "success": True,
-                "message": f"Очищено {cleared_count} ключей кэша случайных туров",
+                "message": f"Очищено {cleared_count} ключей кэша",
                 "cleared_keys": cleared_count,
                 "cleared_hotel_types": hotel_types
             }
             
         except Exception as e:
-            logger.error(f"❌ Ошибка очистки кэша случайных туров: {e}")
+            logger.error(f"❌ Ошибка очистки кэша: {e}")
             return {
                 "success": False,
                 "error": str(e)
@@ -1075,7 +868,6 @@ class RandomToursCacheUpdateService:
                         cached_types += 1
                         total_tours += len(cached_tours)
                         
-                        # Анализ качества
                         real_tours = len([t for t in cached_tours if t.get("generation_strategy") in ["search", "hot_tours"]])
                         
                         cache_details[display_name] = {
@@ -1084,7 +876,9 @@ class RandomToursCacheUpdateService:
                             "real_tours": real_tours,
                             "quality": f"{(real_tours/len(cached_tours)*100):.1f}%" if cached_tours else "0%",
                             "api_param": hotel_type_info["api_param"],
-                            "cache_key": cache_key
+                            "cache_key": cache_key,
+                            "has_descriptions": any(t.get("hoteldescriptions") for t in cached_tours),
+                            "has_tours_data": any(t.get("tours") for t in cached_tours)
                         }
                     else:
                         cache_details[display_name] = {
@@ -1100,7 +894,6 @@ class RandomToursCacheUpdateService:
                         "api_param": hotel_type_info["api_param"]
                     }
             
-            # Определяем состояние здоровья
             coverage = (cached_types / len(hotel_types)) * 100
             
             if coverage >= 80:
@@ -1119,16 +912,14 @@ class RandomToursCacheUpdateService:
                 "cache_details": cache_details,
                 "api_integration": {
                     "hoteltypes_filter_enabled": True,
-                    "supported_api_filters": [info["api_param"] for info in self.hotel_types_mapping.values() if info["api_param"]]
-                },
-                "recommendations": [
-                    "Запустите обновление: POST /api/v1/random-tours/cache/force-update" if coverage < 80 else None,
-                    "Проверьте планировщик: GET /api/v1/random-tours/cache/status" if not self.is_running else None
-                ]
+                    "supported_api_filters": [info["api_param"] for info in self.hotel_types_mapping.values() if info["api_param"]],
+                    "enhanced_with_descriptions": True,
+                    "enhanced_with_tours_data": True
+                }
             }
             
         except Exception as e:
-            logger.error(f"❌ Ошибка проверки здоровья кэша случайных туров: {e}")
+            logger.error(f"❌ Ошибка проверки здоровья кэша: {e}")
             return {
                 "health_status": "error",
                 "error": str(e)
@@ -1151,98 +942,7 @@ class RandomToursCacheUpdateService:
                 "documentation": "https://tourvisor.ru/xml/ - поле hoteltypes в поисковых запросах"
             }
         }
-    
-    async def debug_search_extraction(self, hotel_type_key: str) -> Dict[str, Any]:
-        """Диагностический метод для отладки извлечения туров"""
-        try:
-            from app.core.tourvisor_client import tourvisor_client
-            from datetime import datetime, timedelta
-            
-            logger.info(f"🔍 ДИАГНОСТИКА извлечения туров для {hotel_type_key}")
-            
-            hotel_type_info = self.hotel_types_mapping[hotel_type_key]
-            api_param = hotel_type_info["api_param"]
-            
-            # Простой поиск
-            tomorrow = datetime.now() + timedelta(days=1)
-            week_later = datetime.now() + timedelta(days=8)
-            
-            search_params = {
-                "departure": 1,
-                "country": 4,  # Турция - должна дать результаты
-                "datefrom": tomorrow.strftime("%d.%m.%Y"),
-                "dateto": week_later.strftime("%d.%m.%Y"),
-                "nightsfrom": 7,
-                "nightsto": 10,
-                "adults": 2,
-                "format": "json",  # JSON для лучшей диагностики
-                "onpage": 10
-            }
-            
-            if api_param:
-                search_params["hoteltypes"] = api_param
-            
-            # Запускаем поиск
-            request_id = await tourvisor_client.search_tours(search_params)
-            logger.info(f"🚀 Диагностический поиск запущен: {request_id}")
-            
-            # Ждем 15 секунд
-            await asyncio.sleep(15)
-            
-            # Получаем результаты
-            search_results = await tourvisor_client.get_search_results(request_id)
-            
-            # Детальный анализ структуры
-            structure_analysis = {
-                "request_id": request_id,
-                "search_params": search_params,
-                "top_level_keys": list(search_results.keys()),
-                "has_data": "data" in search_results,
-                "data_type": type(search_results.get("data")).__name__ if "data" in search_results else None,
-                "all_keys_recursive": list(self._get_all_keys_recursive(search_results))
-            }
-            
-            if "data" in search_results:
-                data = search_results["data"]
-                if isinstance(data, dict):
-                    structure_analysis["data_keys"] = list(data.keys())
-                    
-                    if "result" in data:
-                        result = data["result"]
-                        structure_analysis["result_type"] = type(result).__name__
-                        if isinstance(result, dict):
-                            structure_analysis["result_keys"] = list(result.keys())
-                            if "hotel" in result:
-                                hotels = result["hotel"]
-                                structure_analysis["hotels_count"] = len(hotels) if isinstance(hotels, list) else (1 if hotels else 0)
-                                structure_analysis["hotels_type"] = type(hotels).__name__
-                                
-                                # Анализ первого отеля
-                                if hotels:
-                                    first_hotel = hotels[0] if isinstance(hotels, list) else hotels
-                                    structure_analysis["first_hotel_keys"] = list(first_hotel.keys()) if isinstance(first_hotel, dict) else "not_dict"
-                                    structure_analysis["first_hotel_sample"] = str(first_hotel)[:500] if isinstance(first_hotel, dict) else str(first_hotel)
-            
-            # Пробуем извлечь туры
-            extracted_tours = await self._extract_tours_from_search_results(search_results, 5, hotel_type_key)
-            
-            return {
-                "success": True,
-                "hotel_type": hotel_type_key,
-                "api_param": api_param,
-                "structure_analysis": structure_analysis,
-                "extracted_tours_count": len(extracted_tours),
-                "extracted_tours": extracted_tours[:2] if extracted_tours else [],  # Показываем первые 2 тура
-                "raw_results_sample": json.dumps(search_results, ensure_ascii=False, indent=2)[:2000]
-            }
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "traceback": traceback.format_exc()
-            }
-    
+
 
 # Создаем единственный экземпляр сервиса
 random_tours_cache_update_service = RandomToursCacheUpdateService()

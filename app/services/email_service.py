@@ -6,6 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
+import html
 
 from app.config import settings
 from app.models.application import Application
@@ -41,13 +42,13 @@ class EmailService:
 
     def _create_application_email(self, application: Application) -> MIMEMultipart:
         """Создание email с информацией о заявке"""
-        msg = MIMEMultipart()
+        msg = MIMEMultipart('alternative')
         msg['From'] = self.email_from
         msg['To'] = self.email_to
         msg['Subject'] = f"Новая заявка {application.type} - {application.name}"
         
-        # Создаем тело письма
-        body = f"""
+        # Создаем текстовую версию письма (для совместимости)
+        text_body = f"""
 Получена новая заявка с сайта турагентства
 
 Тип заявки: {application.type}
@@ -71,8 +72,161 @@ ID заявки: {application.id}
 Письмо отправлено автоматически системой турагентства
 """
         
-        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        # Создаем HTML-версию письма
+        html_body = self._create_html_body(application)
+        
+        # Добавляем обе версии в письмо
+        text_part = MIMEText(text_body, 'plain', 'utf-8')
+        html_part = MIMEText(html_body, 'html', 'utf-8')
+        
+        msg.attach(text_part)
+        msg.attach(html_part)
+        
         return msg
+    
+    def _create_html_body(self, application: Application) -> str:
+        """Создание HTML-версии письма с поддержкой custom body"""
+        
+        # Основная HTML-структура
+        html_template = f"""
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Новая заявка</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+        .header {{
+            background-color: #007bff;
+            color: white;
+            padding: 20px;
+            border-radius: 8px 8px 0 0;
+            text-align: center;
+        }}
+        .content {{
+            background-color: #f8f9fa;
+            padding: 20px;
+            border: 1px solid #dee2e6;
+        }}
+        .section {{
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: white;
+            border-radius: 5px;
+            border-left: 4px solid #007bff;
+        }}
+        .section h3 {{
+            margin-top: 0;
+            color: #007bff;
+        }}
+        .info-row {{
+            margin-bottom: 10px;
+        }}
+        .info-row strong {{
+            color: #495057;
+        }}
+        .custom-body {{
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #fff;
+            border-radius: 5px;
+            border: 1px solid #dee2e6;
+        }}
+        .footer {{
+            background-color: #6c757d;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            border-radius: 0 0 8px 8px;
+            font-size: 12px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Новая заявка с сайта</h1>
+        <p>Тип заявки: <strong>{application.type}</strong></p>
+        <p>Дата: {application.created_at.strftime('%d.%m.%Y %H:%M:%S')}</p>
+    </div>
+    
+    <div class="content">
+        <div class="section">
+            <h3>Информация о клиенте</h3>
+            <div class="info-row"><strong>Имя:</strong> {html.escape(application.name)}</div>
+            <div class="info-row"><strong>Телефон:</strong> {html.escape(application.phone)}</div>
+            <div class="info-row"><strong>Email:</strong> {html.escape(application.email or 'Не указан')}</div>
+            <div class="info-row"><strong>Ближайший офис:</strong> {html.escape(application.nearest_office or 'Не указан')}</div>
+            <div class="info-row"><strong>Удобное время для связи:</strong> {html.escape(application.communication_time or 'Не указано')}</div>
+        </div>
+        
+        {self._render_description_section(application)}
+        
+        {self._render_custom_body_section(application)}
+        
+        <div class="section">
+            <h3>Системная информация</h3>
+            <div class="info-row"><strong>ID заявки:</strong> {application.id}</div>
+            <div class="info-row"><strong>Статус:</strong> {application.status}</div>
+        </div>
+    </div>
+    
+    <div class="footer">
+        Письмо отправлено автоматически системой турагентства
+    </div>
+</body>
+</html>
+"""
+        return html_template
+    
+    def _render_description_section(self, application: Application) -> str:
+        """Рендерит секцию с обычным описанием"""
+        if not application.description:
+            return ""
+        
+        return f"""
+        <div class="section">
+            <h3>Дополнительная информация</h3>
+            <div>{html.escape(application.description)}</div>
+        </div>
+        """
+    
+    def _render_custom_body_section(self, application: Application) -> str:
+        """Рендерит секцию с custom HTML body"""
+        if not application.body:
+            return ""
+        
+        # Важно: Мы НЕ экранируем HTML в body, так как это должен быть валидный HTML
+        # Но для безопасности стоит добавить базовую валидацию
+        sanitized_body = self._sanitize_html(application.body)
+        
+        return f"""
+        <div class="section">
+            <h3>Детали заявки</h3>
+            <div class="custom-body">
+                {sanitized_body}
+            </div>
+        </div>
+        """
+    
+    def _sanitize_html(self, html_content: str) -> str:
+        """Базовая санитизация HTML контента"""
+        # Простая санитизация - убираем потенциально опасные теги
+        dangerous_tags = ['<script', '<iframe', '<object', '<embed', '<form']
+        
+        sanitized = html_content
+        for tag in dangerous_tags:
+            sanitized = sanitized.replace(tag, f'&lt;{tag[1:]}')
+            sanitized = sanitized.replace(tag.upper(), f'&lt;{tag[1:].upper()}')
+        
+        return sanitized
     
     def _send_email_sync(self, msg: MIMEMultipart) -> bool:
         """Синхронная отправка email"""

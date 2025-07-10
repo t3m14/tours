@@ -200,37 +200,7 @@ class DirectionsService:
             mock_price = self._generate_mock_price(country_id, city_name)
             mock_image = self._generate_fallback_image_link(country_id, city_name)
             return mock_price, mock_image
-    def _extract_regions_from_api_response(self, regions_data: Dict) -> List[Dict[str, Any]]:
-        """ИСПРАВЛЕННОЕ извлечение регионов"""
-        try:
-            regions = []
-            
-            # Правильный путь: lists -> regions -> region
-            if "lists" in regions_data and "regions" in regions_data["lists"]:
-                regions = regions_data["lists"]["regions"].get("region", [])
-            
-            # Приводим к списку
-            if not isinstance(regions, list):
-                regions = [regions] if regions else []
-            
-            # Валидируем регионы
-            valid_regions = []
-            for region in regions:
-                region_id = region.get("id")
-                region_name = region.get("name")
-                
-                if region_id and region_name:
-                    valid_regions.append({
-                        "id": int(region_id),
-                        "name": region_name.strip(),
-                        "synthetic": False
-                    })
-            
-            return valid_regions
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка извлечения регионов: {e}")
-            return []
+
     async def _get_top_cities_for_country(self, country_id: int, limit: int = 12) -> List[Dict[str, Any]]:
         """
         ИСПРАВЛЕННОЕ получение топ-N туристических городов для страны через API
@@ -255,7 +225,7 @@ class DirectionsService:
                 logger.debug(f"📄 Получен ответ API для страны {country_id}")
                 
                 # Извлекаем регионы
-                regions = self._extract_regions_from_api_response(regions_data)
+                regions = regions_data.get("lists", {}).get("regions", {}).get("region", [])
                 if not isinstance(regions, list):
                     regions = [regions] if regions else []
                 

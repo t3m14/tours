@@ -496,6 +496,8 @@ class RandomToursCacheUpdateService:
                 "hotel_rating": safe_get(hotel, "hotelrating", 0, float),
                 "country_name": safe_get(hotel, "countryname"),
                 "region_name": safe_get(hotel, "regionname"),
+                "departurecode": safe_get(hotel, "departurecode"),
+                "countrycode": safe_get(hotel, "countrycode"),
                 "price": safe_get(tour, "price", 0, lambda x: int(float(x))),
                 "nights": safe_get(tour, "nights", 7, int),
                 "operator_name": safe_get(tour, "operatorname"),

@@ -730,3 +730,69 @@ def format_bytes(bytes_count: int) -> str:
             return f"{bytes_count:.1f} {unit}"
         bytes_count /= 1024.0
     return f"{bytes_count:.1f} TB"
+
+@router.get("/cache/preview/{country_id}")
+async def preview_cached_directions(country_id: int, limit: int = 10) -> Dict[str, Any]:
+    """
+    Предварительный просмотр закешированных направлений
+    МОМЕНТАЛЬНО возвращает данные из кеша без перегенерации
+    """
+    try:
+        # Находим название страны
+        country_name = None
+        for name, info in directions_service.COUNTRIES_MAPPING.items():
+            if info["country_id"] == country_id:
+                country_name = name
+                break
+        
+        if not country_name:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"Неподдерживаемая страна: {country_id}",
+                    "available_countries": {
+                        name: info["country_id"] 
+                        for name, info in directions_service.COUNTRIES_MAPPING.items() 
+                        if info["country_id"] is not None
+                    }
+                }
+            )
+        
+        # Получаем из кеша - МОМЕНТАЛЬНАЯ ОТДАЧА
+        cache_key = f"directions_with_prices_country_{country_id}"
+        cached_directions = await cache_service.get(cache_key)
+        
+        if not cached_directions:
+            return {
+                "success": False,
+                "message": f"Нет закешированных направлений для страны '{country_name}'",
+                "country": {
+                    "id": country_id,
+                    "name": country_name
+                },
+                "recommendation": f"Используйте GET /country/{country_id} для генерации данных"
+            }
+        
+        # Анализируем качество
+        with_prices = len([d for d in cached_directions if d.get("min_price")])
+        with_images = len([d for d in cached_directions if d.get("image_link")])
+        preview_directions = cached_directions[:limit]
+        
+        return {
+            "success": True,
+            "country": {"id": country_id, "name": country_name},
+            "total_cached": len(cached_directions),
+            "showing": len(preview_directions),
+            "quality_stats": {
+                "with_prices": with_prices,
+                "with_images": with_images,
+                "price_coverage": f"{(with_prices/len(cached_directions)*100):.1f}%" if cached_directions else "0%"
+            },
+            "preview_directions": preview_directions
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Ошибка предварительного просмотра для country_id {country_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка при получении превью: {str(e)}")

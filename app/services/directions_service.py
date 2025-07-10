@@ -30,17 +30,34 @@ class DirectionsService:
         "Камбоджа": {"country_id": 40, "country_code": 40},
     }
 
+ 
     async def get_directions_by_country(self, country_name: str) -> List[Dict[str, Any]]:
         """
-        ИСПРАВЛЕННОЕ получение направлений для конкретной страны
-        
-        Основные исправления:
-        1. Добавлена обработка NULL значений min_price и image_link
-        2. Улучшена генерация fallback цен и картинок
-        3. Исправлена логика обработки синтетических городов
-        4. Добавлена валидация результатов
+        ИСПРАВЛЕНО: добавлена логика кеша как в random_tours_service
+        Сначала проверяем кеш, потом вызываем оригинальную логику
         """
+        if country_name not in self.COUNTRIES_MAPPING:
+            logger.warning(f"❌ Неизвестная страна: {country_name}")
+            return []
+        
+        country_info = self.COUNTRIES_MAPPING[country_name]
+        country_id = country_info["country_id"]
+        cache_key = f"directions_with_prices_country_{country_id}"
+        
+        # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: СНАЧАЛА проверяем кеш - моментальная отдача!
         try:
+            cached_directions = await cache_service.get(cache_key)
+            if cached_directions:
+                logger.info(f"📦 МОМЕНТАЛЬНАЯ ОТДАЧА {len(cached_directions)} направлений из кеша для {country_name}")
+                return cached_directions
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка проверки кеша для {country_name}: {e}")
+        
+        # Если кеша нет, вызываем оригинальную логику генерации
+        logger.info(f"🔄 Генерация направлений для {country_name} (кеш отсутствует)")
+        
+        try:
+            # ВСЯ ВАША ОРИГИНАЛЬНАЯ ЛОГИКА БЕЗ ИЗМЕНЕНИЙ:
             logger.info(f"🌍 Получение направлений для страны: {country_name}")
             
             # Проверяем что страна есть в нашем маппинге
@@ -55,13 +72,6 @@ class DirectionsService:
                 return []
             
             logger.info(f"🔍 Получаем города для country_id: {country_id}")
-            
-            # Кэшируем результат на 2 часа (поиски дорогие)
-            cache_key = f"directions_with_prices_country_{country_id}"
-            cached_result = await cache_service.get(cache_key)
-            if cached_result:
-                logger.info(f"📦 Возвращаем кэшированные данные с ценами для {country_name}: {len(cached_result)} направлений")
-                return cached_result
             
             # Получаем 12 туристических городов для данной страны
             cities = await self._get_top_cities_for_country(country_id, limit=12)
@@ -89,6 +99,7 @@ class DirectionsService:
                     "country_name": country_name,
                     "country_id": country_id,
                     "city_name": city_name,
+                    "city_id": region_id,
                     "min_price": min_price,  # Может быть None для городов без туров
                     "image_link": image_link  # Может быть None для городов без картинок
                 }
@@ -106,16 +117,30 @@ class DirectionsService:
             # ИСПРАВЛЕНИЕ: Валидация результата
             valid_results = self._validate_and_fix_results(result, country_id, country_name)
             
-            # Кэшируем на 2 часа (поиски дорогие)
-            await cache_service.set(cache_key, valid_results, ttl=7200)
+            # ИЗМЕНЯЕМ: Сохраняем в кеш на 30 дней (вместо 2 часов) 
+            if valid_results:
+                try:
+                    await cache_service.set(cache_key, valid_results, ttl=86400 * 30)  # 30 дней
+                    logger.info(f"💾 Сохранено {len(valid_results)} направлений в кеш для {country_name}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка сохранения в кеш для {country_name}: {e}")
             
             logger.info(f"✅ Получено {len(valid_results)} направлений с ценами для {country_name}")
             return valid_results
             
         except Exception as e:
-            logger.error(f"❌ Ошибка получения направлений для {country_name}: {e}")
-            raise
-
+            logger.error(f"❌ Ошибка генерации направлений для {country_name}: {e}")
+            
+            # ВАЖНО: При ошибке возвращаем старый кеш если есть
+            try:
+                backup_cache = await cache_service.get(cache_key)
+                if backup_cache:
+                    logger.info(f"🔄 Возвращен резервный кеш для {country_name}")
+                    return backup_cache
+            except Exception:
+                pass
+            
+            return []
     def _validate_and_fix_results(self, results: List[Dict], country_id: int, country_name: str) -> List[Dict]:
         """
         НОВЫЙ МЕТОД: Валидация и исправление результатов

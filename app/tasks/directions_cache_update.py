@@ -144,9 +144,17 @@ class DirectionsCacheUpdateService:
             logger.error(f"❌ Критическая ошибка в цикле обновления: {e}")
             logger.error(traceback.format_exc())
             raise
-    
+        
+        
     async def _update_country_directions(self, country_name: str, country_info: Dict) -> Dict[str, Any]:
-        """Обновление направлений для одной страны"""
+        """
+        ИСПРАВЛЕНО: Обновление направлений для одной страны с сохранением старого кеша
+        
+        Изменения:
+        1. НЕ очищаем кеш перед обновлением
+        2. Сохраняем старый кеш на случай ошибки
+        3. Отдаем предпочтение реальным данным
+        """
         country_id = country_info.get("country_id")
         
         if not country_id:
@@ -158,15 +166,26 @@ class DirectionsCacheUpdateService:
             }
         
         start_time = datetime.now()
+        cache_key = f"directions_with_prices_country_{country_id}"
         
         try:
             logger.info(f"🔄 Обновление направлений для {country_name} (ID: {country_id})")
             
-            # Очищаем кэш для этой страны
-            cache_key = f"directions_with_prices_country_{country_id}"
-            await cache_service.delete(cache_key)
+            # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Сохраняем старый кеш перед обновлением
+            old_cache = None
+            try:
+                old_cache = await cache_service.get(cache_key)
+                if old_cache:
+                    logger.info(f"💾 Сохранен старый кеш для {country_name}: {len(old_cache)} направлений")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось получить старый кеш для {country_name}: {e}")
             
-            # Получаем новые направления (это создаст новый кэш)
+            # НЕ ОЧИЩАЕМ КЕШ! Пусть get_directions_by_country сам решает
+            # await cache_service.delete(cache_key)  # <-- УБИРАЕМ ЭТУ СТРОКУ
+            
+            # Получаем новые направления
+            # directions_service.get_directions_by_country теперь сам проверяет кеш
+            # и обновляет только если нужно
             directions = await directions_service.get_directions_by_country(country_name)
             
             end_time = datetime.now()
@@ -176,20 +195,52 @@ class DirectionsCacheUpdateService:
             with_prices = len([d for d in directions if d.get("min_price")])
             with_images = len([d for d in directions if d.get("image_link")])
             
-            result = {
-                "success": True,
-                "directions_count": len(directions),
-                "execution_time_seconds": execution_time,
-                "quality_stats": {
-                    "with_prices": with_prices,
-                    "with_images": with_images,
-                    "price_coverage": f"{(with_prices/len(directions)*100):.1f}%" if directions else "0%",
-                    "image_coverage": f"{(with_images/len(directions)*100):.1f}%" if directions else "0%"
+            # Проверяем, что получили данные
+            if directions:
+                result = {
+                    "success": True,
+                    "directions_count": len(directions),
+                    "execution_time_seconds": execution_time,
+                    "quality_stats": {
+                        "with_prices": with_prices,
+                        "with_images": with_images,
+                        "price_coverage": f"{(with_prices/len(directions)*100):.1f}%" if directions else "0%",
+                        "image_coverage": f"{(with_images/len(directions)*100):.1f}%" if directions else "0%"
+                    },
+                    "cache_action": "updated" if directions != old_cache else "kept_existing"
                 }
-            }
-            
-            logger.info(f"✅ {country_name}: {len(directions)} направлений за {execution_time:.1f}с")
-            return result
+                
+                logger.info(f"✅ {country_name}: {len(directions)} направлений за {execution_time:.1f}с")
+                return result
+            else:
+                # Если новых данных нет, но есть старый кеш - используем его
+                if old_cache:
+                    logger.info(f"🔄 Нет новых данных для {country_name}, оставляем старый кеш: {len(old_cache)} направлений")
+                    
+                    # Восстанавливаем старый кеш с новым TTL
+                    await cache_service.set(cache_key, old_cache, ttl=86400 * 30)
+                    
+                    return {
+                        "success": True,
+                        "directions_count": len(old_cache),
+                        "execution_time_seconds": execution_time,
+                        "quality_stats": {
+                            "with_prices": len([d for d in old_cache if d.get("min_price")]),
+                            "with_images": len([d for d in old_cache if d.get("image_link")]),
+                            "price_coverage": f"{(len([d for d in old_cache if d.get('min_price')])/len(old_cache)*100):.1f}%",
+                            "image_coverage": f"{(len([d for d in old_cache if d.get('image_link')])/len(old_cache)*100):.1f}%"
+                        },
+                        "cache_action": "kept_old_cache"
+                    }
+                else:
+                    # Нет ни новых данных, ни старого кеша
+                    return {
+                        "success": False,
+                        "error": "Нет данных и нет старого кеша",
+                        "directions_count": 0,
+                        "execution_time_seconds": execution_time,
+                        "cache_action": "no_data"
+                    }
             
         except Exception as e:
             end_time = datetime.now()
@@ -197,13 +248,71 @@ class DirectionsCacheUpdateService:
             
             logger.error(f"❌ Ошибка обновления {country_name}: {e}")
             
+            # ВАЖНО: При ошибке восстанавливаем старый кеш
+            if old_cache:
+                try:
+                    await cache_service.set(cache_key, old_cache, ttl=86400 * 30)
+                    logger.info(f"🔄 Восстановлен старый кеш для {country_name} после ошибки")
+                    
+                    return {
+                        "success": True,  # Считаем успехом, так как данные есть
+                        "directions_count": len(old_cache),
+                        "execution_time_seconds": execution_time,
+                        "error": str(e),
+                        "cache_action": "restored_old_cache_after_error",
+                        "quality_stats": {
+                            "with_prices": len([d for d in old_cache if d.get("min_price")]),
+                            "with_images": len([d for d in old_cache if d.get("image_link")]),
+                        }
+                    }
+                except Exception as restore_error:
+                    logger.error(f"❌ Не удалось восстановить старый кеш для {country_name}: {restore_error}")
+            
             return {
                 "success": False,
                 "error": str(e),
                 "directions_count": 0,
-                "execution_time_seconds": execution_time
+                "execution_time_seconds": execution_time,
+                "cache_action": "failed"
             }
-    
+
+    # ДОПОЛНИТЕЛЬНО: Добавить метод для принудительного обновления конкретной страны
+    async def force_update_country(self, country_name: str) -> Dict[str, Any]:
+        """
+        НОВЫЙ МЕТОД: Принудительное обновление конкретной страны с очисткой кеша
+        """
+        if country_name not in directions_service.COUNTRIES_MAPPING:
+            return {
+                "success": False,
+                "error": f"Страна {country_name} не найдена"
+            }
+        
+        country_info = directions_service.COUNTRIES_MAPPING[country_name]
+        country_id = country_info.get("country_id")
+        
+        if not country_id:
+            return {
+                "success": False,
+                "error": f"Нет country_id для {country_name}"
+            }
+        
+        logger.info(f"🚀 Принудительное обновление {country_name} с очисткой кеша")
+        
+        try:
+            # Очищаем кеш принудительно
+            cache_key = f"directions_with_prices_country_{country_id}"
+            await cache_service.delete(cache_key)
+            logger.info(f"🗑️ Очищен кеш для {country_name}")
+            
+            # Обновляем данные
+            return await self._update_country_directions(country_name, country_info)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка принудительного обновления {country_name}: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
     async def force_update_now(self) -> Dict[str, Any]:
         """Принудительное обновление сейчас (для API)"""
         logger.info("🚀 Принудительное обновление кэша направлений")

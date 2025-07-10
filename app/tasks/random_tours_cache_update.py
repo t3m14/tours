@@ -1,4 +1,4 @@
-# app/tasks/random_tours_cache_update.py - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# app/tasks/random_tours_cache_update.py - ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 import asyncio
 import logging
@@ -10,8 +10,8 @@ import random
 
 from app.services.random_tours_service import random_tours_service
 from app.services.cache_service import cache_service
-from app.services.tour_service import tour_service  # Добавили импорт
-from app.models.tour import RandomTourRequest, TourSearchRequest  # Добавили TourSearchRequest
+from app.services.tour_service import tour_service
+from app.models.tour import RandomTourRequest, TourSearchRequest
 from app.utils.logger import setup_logger
 import os
 
@@ -666,12 +666,12 @@ class RandomToursCacheUpdateService:
             return []
     
     async def _enrich_tour_with_real_data(self, tour: Dict) -> None:
-        """Обогащение тура реальными данными через существующий API"""
+        """Обогащение тура реальными данными через прямое обращение к hotels API"""
         try:
             # Получаем код отеля
             hotel_code = tour.get("hotelcode")
             if not hotel_code or hotel_code.startswith("MOCK_"):
-                # Для mock туров создаем базовые данные
+                # Для mock туров создаем базовые данные в правильном формате
                 await self._create_mock_tour_data(tour)
                 return
             
@@ -680,159 +680,346 @@ class RandomToursCacheUpdateService:
             departure_city = 1  # Москва по умолчанию
             
             try:
-                # Используем существующий tour_service для получения реальных туров
-                search_request = TourSearchRequest(
-                    departure=departure_city,
-                    country=int(country_code) if str(country_code).isdigit() else 1,
-                    hotels=hotel_code,
-                    adults=tour.get("adults", 2),
-                    children=tour.get("children", 0),
-                    nightsfrom=max(1, tour.get("nights", 7) - 1),
-                    nightsto=tour.get("nights", 7) + 1
+                # Используем внутренний импорт для избежания циклических зависимостей
+                from app.api.v1.hotels import get_hotel_tours
+                
+                logger.debug(f"🔍 Прямое обращение к hotels API для отеля {hotel_code}")
+                
+                # Вызываем существующую функцию для получения туров
+                hotels_result = await get_hotel_tours(
+                    hotel_code=hotel_code,
+                    departure_city=departure_city,
+                    country_code=int(country_code) if str(country_code).isdigit() else 1
                 )
                 
-                # Запускаем поиск
-                search_response = await tour_service.search_tours(search_request)
-                
-                if search_response and search_response.request_id:
-                    # Ждем результатов с таймаутом
-                    max_wait_time = 45
-                    start_wait = datetime.now()
+                if hotels_result and len(hotels_result) > 0:
+                    # Берем первый отель из результатов
+                    hotel_info = hotels_result[0]
                     
-                    while (datetime.now() - start_wait).total_seconds() < max_wait_time:
-                        try:
-                            status = await tour_service.get_search_status(search_response.request_id)
-                            
-                            if status.state == "finished":
-                                break
-                            elif status.state == "error":
-                                logger.warning(f"⚠️ Ошибка поиска для отеля {hotel_code}")
-                                break
-                            
-                            await asyncio.sleep(2)
-                            
-                        except Exception as status_error:
-                            logger.debug(f"Ошибка проверки статуса: {status_error}")
-                            await asyncio.sleep(2)
+                    # Преобразуем данные в правильный формат
+                    # Если hotel_info - это объект Pydantic, конвертируем в dict
+                    if hasattr(hotel_info, 'model_dump'):
+                        hotel_data = hotel_info.model_dump()
+                    elif hasattr(hotel_info, 'dict'):
+                        hotel_data = hotel_info.dict()
+                    else:
+                        hotel_data = hotel_info if isinstance(hotel_info, dict) else {}
                     
-                    # Получаем результаты
-                    try:
-                        search_results = await tour_service.get_search_results(search_response.request_id)
-                        
-                        if search_results and search_results.result:
-                            hotels_data = search_results.result
-                            
-                            # Находим наш отель в результатах
-                            target_hotel = None
-                            for hotel_info in hotels_data:
-                                if hotel_info.hotel_code == hotel_code:
-                                    target_hotel = hotel_info
-                                    break
-                            
-                            if target_hotel and target_hotel.tours:
-                                # Обновляем данные отеля
-                                tour["hoteldescriptions"] = target_hotel.hotel_description or f"Отель {target_hotel.hotel_name}"
-                                
-                                # Обновляем список туров реальными данными
-                                real_tours = []
-                                for tour_info in target_hotel.tours[:5]:  # Берем первые 5 туров
-                                    real_tour = {
-                                        "tour_id": getattr(tour_info, 'tour_id', f"tour_{random.randint(1000, 9999)}"),
-                                        "price": int(tour_info.price) if tour_info.price else tour.get("price", 0),
-                                        "nights": int(tour_info.nights) if tour_info.nights else tour.get("nights", 7),
-                                        "meal": tour_info.meal or tour.get("meal", ""),
-                                        "placement": tour_info.room_type or tour.get("placement", "DBL"),
-                                        "operator_name": tour_info.operator_name or tour.get("operator_name", ""),
-                                        "fly_date": tour_info.departure_date or tour.get("fly_date", ""),
-                                        "currency": tour_info.currency or "RUB",
-                                        "adults": tour_info.adults or tour.get("adults", 2),
-                                        "children": tour_info.children or tour.get("children", 0)
-                                    }
-                                    real_tours.append(real_tour)
-                                
-                                tour["tours"] = real_tours
-                                
-                                # Обновляем основные данные тура из первого найденного тура
-                                if real_tours:
-                                    best_tour = real_tours[0]
-                                    tour["price"] = best_tour["price"]
-                                    tour["nights"] = best_tour["nights"]
-                                    tour["meal"] = best_tour["meal"]
-                                    tour["placement"] = best_tour["placement"]
-                                    tour["operator_name"] = best_tour["operator_name"]
-                                    tour["fly_date"] = best_tour["fly_date"]
-                                
-                                logger.debug(f"✅ Обогащен тур для отеля {hotel_code}: {len(real_tours)} туров")
-                                return
-                            
-                        else:
-                            logger.debug(f"⚠️ Нет результатов для отеля {hotel_code}")
-                            
-                    except Exception as results_error:
-                        logger.debug(f"Ошибка получения результатов для {hotel_code}: {results_error}")
-                
+                    # Обновляем тур данными в правильном формате
+                    self._update_tour_with_hotel_data(tour, hotel_data)
+                    
+                    logger.debug(f"✅ Обогащен тур для отеля {hotel_code}")
+                    return
                 else:
-                    logger.debug(f"⚠️ Не удалось запустить поиск для отеля {hotel_code}")
+                    logger.debug(f"⚠️ Нет результатов от hotels API для отеля {hotel_code}")
                     
-            except Exception as search_error:
-                logger.debug(f"Ошибка поиска туров для отеля {hotel_code}: {search_error}")
+            except Exception as api_error:
+                logger.debug(f"Ошибка обращения к hotels API для {hotel_code}: {api_error}")
+                
+                # Попробуем альтернативный метод - прямое обращение к tourvisor_client
+                try:
+                    from app.core.tourvisor_client import tourvisor_client
+                    
+                    logger.debug(f"🔄 Пробуем прямое обращение к tourvisor_client для отеля {hotel_code}")
+                    
+                    # Прямой поиск туров по отелю
+                    search_params = {
+                        "departure": departure_city,
+                        "country": int(country_code) if str(country_code).isdigit() else 1,
+                        "hotels": hotel_code,
+                        "adults": tour.get("adults", 2),
+                        "children": tour.get("children", 0),
+                        "nightsfrom": max(1, tour.get("nights", 7) - 1),
+                        "nightsto": tour.get("nights", 7) + 1,
+                        "format": "json",
+                        "onpage": 10
+                    }
+                    
+                    # Добавляем даты
+                    tomorrow = datetime.now() + timedelta(days=1)
+                    week_later = datetime.now() + timedelta(days=8)
+                    search_params["datefrom"] = tomorrow.strftime("%d.%m.%Y")
+                    search_params["dateto"] = week_later.strftime("%d.%m.%Y")
+                    
+                    request_id = await tourvisor_client.search_tours(search_params)
+                    
+                    if request_id:
+                        # Ждем результатов
+                        max_wait_time = 30
+                        start_wait = datetime.now()
+                        
+                        while (datetime.now() - start_wait).total_seconds() < max_wait_time:
+                            try:
+                                status_result = await tourvisor_client.get_search_status(request_id)
+                                
+                                if status_result:
+                                    status_data = status_result.get("data", {}).get("status", {})
+                                    state = status_data.get("state", "")
+                                    
+                                    if state == "finished":
+                                        break
+                                    elif state == "error":
+                                        break
+                                
+                                await asyncio.sleep(2)
+                                
+                            except Exception as status_error:
+                                logger.debug(f"Ошибка проверки статуса: {status_error}")
+                                await asyncio.sleep(2)
+                        
+                        # Получаем результаты
+                        try:
+                            search_results = await tourvisor_client.get_search_results(request_id)
+                            
+                            if search_results:
+                                # Извлекаем туры из результатов
+                                hotels = self._find_hotels_in_results(search_results)
+                                
+                                for hotel in hotels:
+                                    if hotel.get("hotelcode") == hotel_code:
+                                        # Обновляем тур данными в правильном формате
+                                        self._update_tour_with_hotel_data(tour, hotel)
+                                        
+                                        logger.debug(f"✅ Обогащен тур через tourvisor_client для отеля {hotel_code}")
+                                        return
+                                
+                        except Exception as results_error:
+                            logger.debug(f"Ошибка получения результатов tourvisor_client: {results_error}")
+                
+                except Exception as direct_error:
+                    logger.debug(f"Ошибка прямого обращения к tourvisor_client: {direct_error}")
             
             # Fallback: создаем базовые данные
+            logger.debug(f"⚠️ Используем fallback для отеля {hotel_code}")
             await self._create_mock_tour_data(tour)
             
         except Exception as e:
             logger.debug(f"Ошибка обогащения тура: {e}")
             await self._create_mock_tour_data(tour)
     
-    async def _create_mock_tour_data(self, tour: Dict) -> None:
-        """Создание базовых данных для тура"""
+    def _update_tour_with_hotel_data(self, tour: Dict, hotel_data: Dict) -> None:
+        """Обновляет тур данными отеля в правильном формате"""
         try:
-            # Создаем базовое описание
-            hotel_name = tour.get("hotel_name", "Unknown Hotel")
-            tour["hoteldescriptions"] = f"Отель {hotel_name} - прекрасное место для отдыха"
+            # Обновляем основные данные отеля
+            tour.update({
+                "hotelcode": hotel_data.get("hotelcode") or hotel_data.get("hotel_code", tour.get("hotelcode", "")),
+                "countrycode": hotel_data.get("countrycode") or hotel_data.get("country_code", tour.get("countrycode", "")),
+                "countryname": hotel_data.get("countryname") or hotel_data.get("country_name", tour.get("countryname", "")),
+                "regioncode": hotel_data.get("regioncode") or hotel_data.get("region_code", tour.get("regioncode", "")),
+                "regionname": hotel_data.get("regionname") or hotel_data.get("region_name", tour.get("regionname", "")),
+                "subregioncode": hotel_data.get("subregioncode") or hotel_data.get("subregion_code", tour.get("subregioncode", "")),
+                "hotelname": hotel_data.get("hotelname") or hotel_data.get("hotel_name", tour.get("hotelname", "")),
+                "hotelstars": hotel_data.get("hotelstars") or hotel_data.get("hotel_stars", tour.get("hotelstars", 0)),
+                "hotelrating": hotel_data.get("hotelrating") or hotel_data.get("hotel_rating", tour.get("hotelrating", 0)),
+                "hoteldescription": hotel_data.get("hoteldescription") or hotel_data.get("hotel_description", tour.get("hoteldescription", "")),
+                "fulldesclink": hotel_data.get("fulldesclink") or hotel_data.get("full_desc_link", tour.get("fulldesclink", "")),
+                "reviewlink": hotel_data.get("reviewlink") or hotel_data.get("review_link", tour.get("reviewlink", "")),
+                "picturelink": hotel_data.get("picturelink") or hotel_data.get("picture_link", tour.get("picturelink", "")),
+                "isphoto": hotel_data.get("isphoto", tour.get("isphoto", 0)),
+                "iscoords": hotel_data.get("iscoords", tour.get("iscoords", 0)),
+                "isdescription": hotel_data.get("isdescription", tour.get("isdescription", 0)),
+                "isreviews": hotel_data.get("isreviews", tour.get("isreviews", 0)),
+                "seadistance": hotel_data.get("seadistance", tour.get("seadistance", 0))
+            })
             
-            # Создаем базовую информацию о турах
-            base_tour = {
-                "tour_id": f"tour_{random.randint(1000, 9999)}",
-                "price": tour.get("price", 0),
-                "nights": tour.get("nights", 7),
-                "meal": tour.get("meal", "Завтрак"),
-                "placement": tour.get("placement", "DBL"),
-                "operator_name": tour.get("operator_name", ""),
-                "fly_date": tour.get("fly_date", ""),
-                "currency": tour.get("currency", "RUB"),
-                "adults": tour.get("adults", 2),
-                "children": tour.get("children", 0)
-            }
+            # Обновляем туры в правильном формате
+            hotel_tours = hotel_data.get("tours", [])
             
-            # Создаем несколько вариантов туров с разными ценами
-            tours_list = [base_tour]
+            if hotel_tours:
+                formatted_tours = []
+                for tour_info in hotel_tours:
+                    formatted_tour = {
+                        "operatorcode": tour_info.get("operatorcode") or tour_info.get("operator_code", ""),
+                        "operatorname": tour_info.get("operatorname") or tour_info.get("operator_name", ""),
+                        "flydate": tour_info.get("flydate") or tour_info.get("fly_date") or tour_info.get("departure_date", ""),
+                        "nights": int(tour_info.get("nights", 0)) if tour_info.get("nights") else 0,
+                        "price": int(tour_info.get("price", 0)) if tour_info.get("price") else 0,
+                        "placement": tour_info.get("placement") or tour_info.get("room_type", ""),
+                        "adults": int(tour_info.get("adults", 0)) if tour_info.get("adults") else 0,
+                        "children": int(tour_info.get("children", 0)) if tour_info.get("children") else 0,
+                        "meal": tour_info.get("meal") or tour_info.get("mealrussian", ""),
+                        "room": tour_info.get("room") or tour_info.get("room_type", ""),
+                        "currency": tour_info.get("currency", "RUB"),
+                        "tourname": tour_info.get("tourname") or tour_info.get("tour_name", ""),
+                        "tourid": tour_info.get("tourid") or tour_info.get("tour_id", ""),
+                        "fuelcharge": int(tour_info.get("fuelcharge", 0)) if tour_info.get("fuelcharge") else 0,
+                        "operatorlink": tour_info.get("operatorlink") or tour_info.get("operator_link", ""),
+                        "regular": bool(tour_info.get("regular", False)),
+                        "promo": bool(tour_info.get("promo", False)),
+                        "onrequest": bool(tour_info.get("onrequest", False)),
+                        "mealcode": tour_info.get("mealcode") or tour_info.get("meal_code", ""),
+                        "flightstatus": int(tour_info.get("flightstatus", 0)) if tour_info.get("flightstatus") else 0,
+                        "hotelstatus": int(tour_info.get("hotelstatus", 0)) if tour_info.get("hotelstatus") else 0,
+                        "nightflight": int(tour_info.get("nightflight", 0)) if tour_info.get("nightflight") else 0
+                    }
+                    formatted_tours.append(formatted_tour)
+                
+                tour["tours"] = formatted_tours
+                
+                # Обновляем основной тур данными из первого тура
+                if formatted_tours:
+                    best_tour = formatted_tours[0]
+                    tour["price"] = best_tour["price"]
+                    tour["nights"] = best_tour["nights"]
+                    tour["operatorname"] = best_tour["operatorname"]
+                    tour["flydate"] = best_tour["flydate"]
+                    tour["meal"] = best_tour["meal"]
+                    tour["placement"] = best_tour["placement"]
+                    tour["adults"] = best_tour["adults"]
+                    tour["children"] = best_tour["children"]
+            else:
+                # Если нет туров, создаем базовый тур
+                tour["tours"] = [{
+                    "operatorcode": "",
+                    "operatorname": tour.get("operatorname", ""),
+                    "flydate": tour.get("flydate", ""),
+                    "nights": tour.get("nights", 0),
+                    "price": tour.get("price", 0),
+                    "placement": tour.get("placement", ""),
+                    "adults": tour.get("adults", 0),
+                    "children": tour.get("children", 0),
+                    "meal": tour.get("meal", ""),
+                    "room": "",
+                    "currency": "RUB",
+                    "tourname": "",
+                    "tourid": f"fallback_{random.randint(1000, 9999)}",
+                    "fuelcharge": 0,
+                    "operatorlink": "",
+                    "regular": False,
+                    "promo": False,
+                    "onrequest": False,
+                    "mealcode": "",
+                    "flightstatus": 0,
+                    "hotelstatus": 0,
+                    "nightflight": 0
+                }]
             
-            # Добавляем еще 2-3 варианта с разными ценами
+            # Убираем старые поля, которые не нужны в новом формате
+            fields_to_remove = [
+                "hotel_name", "hotel_stars", "hotel_rating", "country_name", "region_name",
+                "operator_name", "fly_date", "tour_name", "picture_link", "search_source",
+                "generation_strategy", "hotel_type", "hoteldescriptions", "currency"
+            ]
+            
+            for field in fields_to_remove:
+                tour.pop(field, None)
+            
+        except Exception as e:
+            logger.debug(f"Ошибка обновления тура: {e}")
+    
+    async def _create_mock_tour_data(self, tour: Dict) -> None:
+        """Создание базовых данных для тура в правильном формате"""
+        try:
+            # Создаем данные в формате hotels API
+            hotel_name = tour.get("hotel_name") or tour.get("hotelname", "Unknown Hotel")
+            
+            # Основные данные отеля
+            tour.update({
+                "hotelcode": tour.get("hotelcode", f"MOCK_{random.randint(1000, 9999)}"),
+                "countrycode": tour.get("countrycode", "1"),
+                "countryname": tour.get("country_name", "Неизвестная страна"),
+                "regioncode": tour.get("regioncode", "1"),
+                "regionname": tour.get("region_name", "Неизвестный регион"),
+                "subregioncode": "",
+                "hotelname": hotel_name,
+                "hotelstars": tour.get("hotel_stars", 0),
+                "hotelrating": tour.get("hotel_rating", 0),
+                "hoteldescription": f"Отель {hotel_name} - прекрасное место для отдыха",
+                "fulldesclink": "",
+                "reviewlink": "",
+                "picturelink": tour.get("picture_link", ""),
+                "isphoto": 0,
+                "iscoords": 0,
+                "isdescription": 1,
+                "isreviews": 0,
+                "seadistance": tour.get("seadistance", 0)
+            })
+            
+            # Создаем массив туров в правильном формате
             base_price = tour.get("price", 50000)
-            for i in range(2):
-                variant_tour = base_tour.copy()
-                variant_tour["tour_id"] = f"tour_{random.randint(1000, 9999)}"
-                variant_tour["price"] = int(base_price * random.uniform(0.8, 1.2))
-                variant_tour["nights"] = random.choice([7, 10, 14])
-                variant_tour["meal"] = random.choice(["Завтрак", "Полупансион", "Все включено"])
-                tours_list.append(variant_tour)
+            tours_list = []
+            
+            # Создаем 2-3 варианта туров
+            for i in range(random.randint(2, 3)):
+                mock_tour = {
+                    "operatorcode": f"OP{random.randint(10, 99)}",
+                    "operatorname": tour.get("operator_name", random.choice(["Coral Travel", "TUI", "Pegas", "Anex"])),
+                    "flydate": tour.get("fly_date", (datetime.now() + timedelta(days=random.randint(7, 30))).strftime("%d.%m.%Y")),
+                    "nights": tour.get("nights", random.choice([7, 10, 14])),
+                    "price": int(base_price * random.uniform(0.8, 1.2)),
+                    "placement": tour.get("placement", random.choice(["DBL", "SGL", "TRPL"])),
+                    "adults": tour.get("adults", 2),
+                    "children": tour.get("children", 0),
+                    "meal": tour.get("meal", random.choice(["Завтрак", "Полупансион", "Все включено"])),
+                    "room": random.choice(["Standard", "Superior", "Deluxe"]),
+                    "currency": "RUB",
+                    "tourname": f"Тур {i+1}",
+                    "tourid": f"mock_{random.randint(10000, 99999)}",
+                    "fuelcharge": random.randint(0, 5000),
+                    "operatorlink": "",
+                    "regular": random.choice([True, False]),
+                    "promo": random.choice([True, False]),
+                    "onrequest": False,
+                    "mealcode": random.choice(["BB", "HB", "FB", "AI"]),
+                    "flightstatus": random.randint(0, 2),
+                    "hotelstatus": random.randint(0, 2),
+                    "nightflight": random.randint(0, 1)
+                }
+                tours_list.append(mock_tour)
             
             tour["tours"] = tours_list
+            
+            # Обновляем основные данные тура из первого тура
+            if tours_list:
+                best_tour = tours_list[0]
+                tour["price"] = best_tour["price"]
+                tour["nights"] = best_tour["nights"]
+            
+            # Убираем старые поля
+            fields_to_remove = [
+                "hotel_name", "hotel_stars", "hotel_rating", "country_name", "region_name",
+                "operator_name", "fly_date", "tour_name", "picture_link", "search_source",
+                "generation_strategy", "hotel_type", "hoteldescriptions", "currency"
+            ]
+            
+            for field in fields_to_remove:
+                tour.pop(field, None)
             
         except Exception as e:
             logger.debug(f"Ошибка создания mock данных: {e}")
             # Минимальные данные
-            tour["hoteldescriptions"] = f"Отель {tour.get('hotel_name', 'Unknown')}"
-            tour["tours"] = [{
-                "tour_id": f"tour_{random.randint(1000, 9999)}",
-                "price": tour.get("price", 0),
-                "nights": tour.get("nights", 7),
-                "meal": tour.get("meal", "Завтрак"),
-                "placement": tour.get("placement", "DBL")
-            }]
+            tour.update({
+                "hotelcode": f"MOCK_{random.randint(1000, 9999)}",
+                "hotelname": "Mock Hotel",
+                "countryname": "Mock Country",
+                "regionname": "Mock Region",
+                "tours": [{
+                    "operatorcode": "MOCK",
+                    "operatorname": "Mock Operator",
+                    "flydate": "",
+                    "nights": 7,
+                    "price": 50000,
+                    "placement": "DBL",
+                    "adults": 2,
+                    "children": 0,
+                    "meal": "Завтрак",
+                    "room": "Standard",
+                    "currency": "RUB",
+                    "tourname": "Mock Tour",
+                    "tourid": f"mock_{random.randint(1000, 9999)}",
+                    "fuelcharge": 0,
+                    "operatorlink": "",
+                    "regular": False,
+                    "promo": False,
+                    "onrequest": False,
+                    "mealcode": "BB",
+                    "flightstatus": 0,
+                    "hotelstatus": 0,
+                    "nightflight": 0
+                }]
+            })
     
-    # API методы для управления (остаются без изменений)
+    # API методы для управления
     async def force_update_now(self) -> Dict[str, Any]:
         """Принудительное обновление сейчас"""
         logger.info("🚀 Принудительное обновление случайных туров")
@@ -966,7 +1153,7 @@ class RandomToursCacheUpdateService:
                             "quality": f"{(real_tours/len(cached_tours)*100):.1f}%" if cached_tours else "0%",
                             "api_param": hotel_type_info["api_param"],
                             "cache_key": cache_key,
-                            "has_descriptions": any(t.get("hoteldescriptions") for t in cached_tours),
+                            "has_descriptions": any(t.get("hoteldescription") for t in cached_tours),
                             "has_tours_data": any(t.get("tours") for t in cached_tours),
                             "uses_real_api": True
                         }

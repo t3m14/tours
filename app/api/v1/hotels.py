@@ -150,11 +150,11 @@ async def get_hotel_tours(
         
         hotels = search_results.result or []
         
-        # Кэшируем на 2 часа
+        # Кэшируем на 24 часа
         await cache_service.set(
             cache_key,
             [hotel.model_dump() for hotel in hotels],
-            ttl=7200
+            ttl=86400
         )
         
         return hotels

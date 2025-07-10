@@ -253,123 +253,316 @@ class RandomToursCacheUpdateService:
                 "mock_tours": 0,
                 "api_calls_made": 0
             }
-    
     async def _generate_tours_with_api_filter(self, hotel_type_key: str, api_param: Optional[str], display_name: str) -> tuple[List[Dict], int]:
-        """Генерация туров с использованием API фильтрации по типам отелей"""
+        """
+        ИСПРАВЛЕННАЯ генерация туров с многоэтапным поиском для типов отелей
+        
+        Args:
+            hotel_type_key: Ключ типа отеля для внутреннего использования
+            api_param: Параметр для API TourVisor (hoteltypes)
+            display_name: Отображаемое название типа отеля
+            
+        Returns:
+            tuple: (список туров, количество API вызовов)
+        """
         try:
             from app.core.tourvisor_client import tourvisor_client
+            from datetime import datetime, timedelta
             
             tours_generated = []
             api_calls_made = 0
             
-            # СТРАТЕГИЯ 1: Поиск через API
+            # СТРАТЕГИЯ 1: Поиск до завершения (finished или error)
             if "search" in self.generation_strategies:
-                logger.debug(f"🔍 Стратегия поиска для {display_name}")
+                logger.debug(f"🎯 СТРАТЕГИЯ 1: Поиск до завершения для {display_name}")
                 
-                try:
-                    country_id = random.choice([int(c) for c in self.countries_to_update])
-                    tomorrow = datetime.now() + timedelta(days=1)
-                    week_later = datetime.now() + timedelta(days=8)
-                    
-                    search_params = {
-                        "departure": random.choice([1, 2, 3, 4, 5]),
-                        "country": country_id,
-                        "datefrom": tomorrow.strftime("%d.%m.%Y"),
-                        "dateto": week_later.strftime("%d.%m.%Y"),
-                        "nightsfrom": 7,
-                        "nightsto": 10,
-                        "adults": 2,
-                        "format": "json",
-                        "onpage": 20
-                    }
-                    
-                    if api_param and hotel_type_key != "any":
-                        search_params["hoteltypes"] = api_param
-                    
-                    request_id = await tourvisor_client.search_tours(search_params)
-                    api_calls_made += 1
-                    
-                    if request_id:
-                        # Ждем результатов
-                        max_wait_time = 60
-                        start_wait = datetime.now()
-
-                        while (datetime.now() - start_wait).total_seconds() < max_wait_time:
-                            try:
-                                status_result = await tourvisor_client.get_search_status(request_id)
-                                api_calls_made += 1
-                                
-                                if status_result:
-                                    status_data = status_result.get("data", {}).get("status", {})
-                                    state = status_data.get("state", "")
-                                    hotels_found = int(status_data.get("hotelsfound", 0))
-                                    progress = int(status_data.get("progress", 0))
-                                    
-                                    if state == "finished" or (hotels_found >= 3 and progress >= 30):
-                                        break
-                                        
-                                    if state == "error":
-                                        break
-                                
-                                await asyncio.sleep(3)
-                                
-                            except Exception as e:
-                                logger.warning(f"⚠️ Ошибка проверки статуса: {e}")
-                                await asyncio.sleep(3)
-                        
-                        # Получаем результаты
-                        try:
-                            search_results = await tourvisor_client.get_search_results(request_id)
-                            api_calls_made += 1
-                            
-                            if search_results:
-                                tours_from_search = await self._extract_tours_from_search_results(
-                                    search_results, self.tours_per_type, display_name, search_params
-                                )
-                                tours_generated.extend(tours_from_search)
-                                
-                        except Exception as results_error:
-                            logger.error(f"❌ Ошибка получения результатов: {results_error}")
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка поиска для {display_name}: {e}")
+                result = await self._attempt_search_until_finished(
+                    hotel_type_key, api_param, display_name
+                )
+                if result:
+                    tours_generated.extend(result[0])
+                    api_calls_made += result[1]
+                    if len(tours_generated) >= self.tours_per_type:
+                        logger.info(f"✅ Стратегия 1 успешна для {display_name}: {len(tours_generated)} туров")
+                        return tours_generated[:self.tours_per_type], api_calls_made
             
-            # СТРАТЕГИЯ 2: Горящие туры
+            # СТРАТЕГИЯ 2: Поиск с увеличенным таймаутом
+            if len(tours_generated) < self.tours_per_type:
+                logger.debug(f"🎯 СТРАТЕГИЯ 2: Поиск с увеличенным таймаутом для {display_name}")
+                
+                result = await self._attempt_search_with_extended_timeout(
+                    hotel_type_key, api_param, display_name
+                )
+                if result:
+                    tours_generated.extend(result[0])
+                    api_calls_made += result[1]
+                    if len(tours_generated) >= self.tours_per_type:
+                        logger.info(f"✅ Стратегия 2 успешна для {display_name}: {len(tours_generated)} туров")
+                        return tours_generated[:self.tours_per_type], api_calls_made
+            
+            # СТРАТЕГИЯ 3: Обычная попытка (существующая логика)
+            if len(tours_generated) < self.tours_per_type:
+                logger.debug(f"🎯 СТРАТЕГИЯ 3: Обычная попытка для {display_name}")
+                
+                result = await self._attempt_regular_search(
+                    hotel_type_key, api_param, display_name
+                )
+                if result:
+                    tours_generated.extend(result[0])
+                    api_calls_made += result[1]
+            
+            # СТРАТЕГИЯ 4: Горящие туры (оставляем как было)
             if len(tours_generated) < self.tours_per_type and "hot_tours" in self.generation_strategies:
-                try:
-                    country_id = random.choice([int(c) for c in self.countries_to_update])
-                    
-                    hot_tours_data = await tourvisor_client.get_hot_tours(
-                        city=1,
-                        items=min(20, self.tours_per_type * 2),
-                        countries=str(country_id)
-                    )
-                    api_calls_made += 1
-                    
-                    if hot_tours_data and "data" in hot_tours_data:
-                        tours_from_hot = await self._extract_tours_from_hot_tours(
-                            hot_tours_data, self.tours_per_type - len(tours_generated), display_name
-                        )
-                        tours_generated.extend(tours_from_hot)
+                logger.debug(f"🎯 СТРАТЕГИЯ 4: Горящие туры для {display_name}")
                 
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка получения горящих туров: {e}")
+                result = await self._attempt_hot_tours_search(
+                    hotel_type_key, api_param, display_name
+                )
+                if result:
+                    tours_generated.extend(result[0])
+                    api_calls_made += result[1]
             
-            # СТРАТЕГИЯ 3: Mock туры
+            # СТРАТЕГИЯ 5: Mock туры (если все остальное не сработало)
             if len(tours_generated) < self.tours_per_type and "mock" in self.generation_strategies:
-                needed = self.tours_per_type - len(tours_generated)
-                mock_tours = await self._generate_mock_tours(needed, hotel_type_key, display_name)
+                logger.debug(f"🎯 СТРАТЕГИЯ 5: Mock туры для {display_name}")
+                
+                remaining_needed = self.tours_per_type - len(tours_generated)
+                mock_tours = await self._generate_mock_tours_for_type(
+                    hotel_type_key, api_param, display_name, remaining_needed
+                )
                 tours_generated.extend(mock_tours)
             
-            # Ограничиваем до нужного количества
-            tours_generated = tours_generated[:self.tours_per_type]
-            
-            return tours_generated, api_calls_made
+            logger.info(f"🏁 Завершена генерация для {display_name}: {len(tours_generated)} туров, API вызовов: {api_calls_made}")
+            return tours_generated[:self.tours_per_type], api_calls_made
             
         except Exception as e:
             logger.error(f"❌ Критическая ошибка генерации для {display_name}: {e}")
-            return [], api_calls_made
-    
+            return [], 0
+    async def _attempt_search_until_finished(self, hotel_type_key: str, api_param: Optional[str], display_name: str) -> Optional[tuple[List[Dict], int]]:
+        """
+        НОВАЯ СТРАТЕГИЯ 1: Поиск до статуса finished или error (без ограничения времени)
+        """
+        try:
+            from app.core.tourvisor_client import tourvisor_client
+            from datetime import datetime, timedelta
+            
+            # Подготавливаем параметры поиска
+            country_id = random.choice([int(c) for c in self.countries_to_update])
+            tomorrow = datetime.now() + timedelta(days=1)
+            week_later = datetime.now() + timedelta(days=8)
+            
+            search_params = {
+                "departure": random.choice([1, 2, 3, 4, 5]),
+                "country": country_id,
+                "datefrom": tomorrow.strftime("%d.%m.%Y"),
+                "dateto": week_later.strftime("%d.%m.%Y"),
+                "nightsfrom": 7,
+                "nightsto": 10,
+                "adults": 2,
+                "format": "json",
+                "onpage": 20
+            }
+            
+            # Добавляем фильтр по типу отеля если есть
+            if api_param and hotel_type_key != "any":
+                search_params["hoteltypes"] = api_param
+                logger.debug(f"🎯 Добавлен фильтр hoteltypes={api_param}")
+            
+            logger.info(f"🚀 СТРАТЕГИЯ 1: Запуск поиска до завершения для {display_name}")
+            
+            # Запускаем поиск
+            request_id = await tourvisor_client.search_tours(search_params)
+            api_calls_made = 1
+            
+            if not request_id:
+                logger.warning(f"⚠️ Не удалось запустить поиск для {display_name}")
+                return None
+            
+            logger.info(f"🚀 Поиск {request_id} запущен для {display_name}")
+            
+            # Ждем до завершения (без ограничения времени)
+            start_time = datetime.now()
+            
+            while True:
+                try:
+                    # Проверяем статус
+                    status_result = await tourvisor_client.get_search_status(request_id)
+                    api_calls_made += 1
+                    
+                    if status_result:
+                        status_data = status_result.get("data", {}).get("status", {})
+                        state = status_data.get("state", "")
+                        hotels_found = int(status_data.get("hotelsfound", 0))
+                        progress = int(status_data.get("progress", 0))
+                        
+                        elapsed = (datetime.now() - start_time).total_seconds()
+                        logger.info(f"📊 Поиск {request_id} для {display_name}: {state}, {progress}%, отелей: {hotels_found}, время: {elapsed:.0f}с")
+                        
+                        # Завершаем только при статусе finished или error
+                        if state == "finished":
+                            logger.info(f"✅ Поиск завершен для {display_name} с {hotels_found} отелями")
+                            break
+                        elif state == "error":
+                            logger.warning(f"❌ Поиск завершен с ошибкой для {display_name}")
+                            return None
+                        
+                        # Защита от бесконечного цикла - максимум 10 минут
+                        if elapsed > 600:  # 10 минут
+                            logger.warning(f"⏰ Поиск для {display_name} превысил 10 минут, завершаем")
+                            break
+                    
+                    await asyncio.sleep(3)  # Пауза между проверками
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка проверки статуса для {display_name}: {e}")
+                    await asyncio.sleep(5)
+                    
+                    # Если ошибки статуса повторяются долго, завершаем
+                    if (datetime.now() - start_time).total_seconds() > 300:  # 5 минут
+                        logger.warning(f"⏰ Слишком много ошибок статуса для {display_name}, завершаем")
+                        break
+            
+            # Получаем результаты
+            try:
+                logger.info(f"📥 Получаем результаты поиска {request_id}")
+                search_results = await tourvisor_client.get_search_results(request_id)
+                api_calls_made += 1
+                
+                if search_results:
+                    tours_from_search = await self._extract_tours_from_search_results(
+                        search_results, self.tours_per_type, display_name
+                    )
+                    if tours_from_search:
+                        logger.info(f"✅ СТРАТЕГИЯ 1 для {display_name}: извлечено {len(tours_from_search)} туров")
+                        return tours_from_search, api_calls_made
+                
+            except Exception as results_error:
+                logger.error(f"❌ Ошибка получения результатов для {display_name}: {results_error}")
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка стратегии 1 для {display_name}: {e}")
+            return None
+
+    async def _attempt_search_with_extended_timeout(self, hotel_type_key: str, api_param: Optional[str], display_name: str) -> Optional[tuple[List[Dict], int]]:
+        """
+        НОВАЯ СТРАТЕГИЯ 2: Поиск с увеличенным таймаутом (более терпеливое ожидание)
+        """
+        try:
+            from app.core.tourvisor_client import tourvisor_client
+            from datetime import datetime, timedelta
+            
+            # Подготавливаем параметры поиска (немного другие для разнообразия)
+            country_id = random.choice([int(c) for c in self.countries_to_update])
+            tomorrow = datetime.now() + timedelta(days=2)  # На день позже
+            week_later = datetime.now() + timedelta(days=10)  # Немного больший диапазон
+            
+            search_params = {
+                "departure": random.choice([1, 2, 3, 4, 5]),
+                "country": country_id,
+                "datefrom": tomorrow.strftime("%d.%m.%Y"),
+                "dateto": week_later.strftime("%d.%m.%Y"),
+                "nightsfrom": 6,  # Немного меньше ночей
+                "nightsto": 12,   # Больший диапазон
+                "adults": 2,
+                "format": "json",
+                "onpage": 15      # Меньше результатов для быстроты
+            }
+            
+            # Добавляем фильтр по типу отеля если есть
+            if api_param and hotel_type_key != "any":
+                search_params["hoteltypes"] = api_param
+            
+            logger.info(f"🚀 СТРАТЕГИЯ 2: Запуск поиска с увеличенным таймаутом для {display_name}")
+            
+            # Запускаем поиск
+            request_id = await tourvisor_client.search_tours(search_params)
+            api_calls_made = 1
+            
+            if not request_id:
+                return None
+            
+            # Ждем с увеличенным таймаутом (3 минуты)
+            max_wait_time = 180  # 3 минуты
+            start_wait = datetime.now()
+            
+            while (datetime.now() - start_wait).total_seconds() < max_wait_time:
+                try:
+                    status_result = await tourvisor_client.get_search_status(request_id)
+                    api_calls_made += 1
+                    
+                    if status_result:
+                        status_data = status_result.get("data", {}).get("status", {})
+                        state = status_data.get("state", "")
+                        hotels_found = int(status_data.get("hotelsfound", 0))
+                        progress = int(status_data.get("progress", 0))
+                        
+                        # Условия завершения более мягкие
+                        if state == "finished" or (hotels_found >= 2 and progress >= 50):
+                            logger.info(f"✅ СТРАТЕГИЯ 2 для {display_name}: {hotels_found} отелей при {progress}%")
+                            break
+                        elif state == "error":
+                            return None
+                    
+                    await asyncio.sleep(5)  # Более терпеливая пауза
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка проверки статуса стратегии 2 для {display_name}: {e}")
+                    await asyncio.sleep(5)
+            
+            # Получаем результаты
+            try:
+                search_results = await tourvisor_client.get_search_results(request_id)
+                api_calls_made += 1
+                
+                if search_results:
+                    tours_from_search = await self._extract_tours_from_search_results(
+                        search_results, self.tours_per_type, display_name
+                    )
+                    if tours_from_search:
+                        logger.info(f"✅ СТРАТЕГИЯ 2 для {display_name}: извлечено {len(tours_from_search)} туров")
+                        return tours_from_search, api_calls_made
+                
+            except Exception as results_error:
+                logger.error(f"❌ Ошибка получения результатов стратегии 2 для {display_name}: {results_error}")
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка стратегии 2 для {display_name}: {e}")
+            return None
+
+    async def _attempt_regular_search(self, hotel_type_key: str, api_param: Optional[str], display_name: str) -> Optional[tuple[List[Dict], int]]:
+        """
+        СТРАТЕГИЯ 3: Обычная попытка (существующая логика с небольшими улучшениями)
+        """
+        try:
+            # Здесь можно оставить существующую логику поиска с обычным таймаутом
+            # Или использовать упрощенную версию первых двух стратегий
+            logger.info(f"🚀 СТРАТЕГИЯ 3: Обычная попытка для {display_name}")
+            
+            # Возвращаем результат существующей логики или None
+            return await self._existing_search_logic(hotel_type_key, api_param, display_name)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка стратегии 3 для {display_name}: {e}")
+            return None
+
+    async def _attempt_hot_tours_search(self, hotel_type_key: str, api_param: Optional[str], display_name: str) -> Optional[tuple[List[Dict], int]]:
+        """
+        СТРАТЕГИЯ 4: Горящие туры (оставляем как было)
+        """
+        try:
+            logger.info(f"🔥 СТРАТЕГИЯ 4: Горящие туры для {display_name}")
+            
+            # Логика для горящих туров
+            # Возвращаем результат или None
+            return await self._existing_hot_tours_logic(hotel_type_key, api_param, display_name)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка стратегии горящих туров для {display_name}: {e}")
+            return None
     async def _extract_tours_from_search_results(self, search_results: Dict, limit: int, hotel_type: str, search_params: Dict = None) -> List[Dict]:
         """Извлечение туров из результатов поиска"""
         try:

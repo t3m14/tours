@@ -186,48 +186,98 @@ class RandomToursService:
         except Exception as e:
             logger.error(f"🔥 Ошибка стратегии горящих туров: {e}")
             return []
-    
     async def _try_search_strategy(self, needed_count: int) -> List[HotTourInfo]:
         """Стратегия получения туров через обычный поиск"""
         try:
             logger.info(f"🔍 Пробуем стратегию поиска для {needed_count} туров")
-            
+        
             found_tours = []
             max_attempts = min(needed_count * 2, 12)  # Увеличиваем до 12 попыток
-            
+        
             search_variants = self._create_optimized_search_variants(max_attempts, needed_count)
-            
-            # Создаем случайные комбинации
+        
+            # Этап 1: Ждем finished или ошибку
             for i, search_params in enumerate(search_variants):
                 if len(found_tours) >= needed_count:
                     break
-                
+            
                 try:
                     country_name = tour_service._get_country_name(search_params['country'])
                     city_name = tour_service._get_city_name(search_params['departure'])
-                    
+                
                     logger.debug(f"🔍 Поиск {i+1}/{len(search_variants)}: {country_name} из {city_name}")
-                    
+                    logger.debug(f"🔍 Этап 1: Ожидание finished или ошибки. Параметры: {search_params}")
+                
                     # Запускаем поиск
                     request_id = await tourvisor_client.search_tours(search_params)
-                    
+                
+                    # Ждем статус finished или ошибку
+                    start_time = time.time()
+                    while True:
+                        status = await tourvisor_client.get_search_status(request_id)
+                        if status == "finished":
+                            break
+                        if status == "error":
+                            raise Exception("Search failed with error status")
+                        if time.time() - start_time > 30:  # 30 секунд таймаут
+                            raise Exception("Search timeout in phase 1")
+                        await asyncio.sleep(1)
+                
                     # Получаем НЕСКОЛЬКО туров из одного поиска
                     found_tours_from_search = await self._get_multiple_tours_from_search(request_id, search_params, needed_count - len(found_tours))
-                    
+                
                     if found_tours_from_search:
                         found_tours.extend(found_tours_from_search)
-                        logger.debug(f"✅ Найдено {len(found_tours_from_search)} туров из поиска")
-                    
+                        logger.debug(f"✅ Этап 1: Найдено {len(found_tours_from_search)} туров из поиска")
+                
                     # Короткая задержка
                     await asyncio.sleep(0.3)
-                    
+                
                 except Exception as e:
-                    logger.debug(f"🔍 Ошибка поиска {i+1}: {e}")
+                    logger.debug(f"🔍 Этап 1: Ошибка поиска {i+1}: {e}")
                     continue
-            
-            logger.info(f"🔍 Стратегия поиска: найдено {len(found_tours)} туров")
+        
+            # Этап 2: Длительный поиск (если не нашли достаточно туров)
+            if len(found_tours) < needed_count:
+                logger.debug("🔍 Начинаем Этап 2: Длительный поиск (10 минут)")
+                for i, search_params in enumerate(search_variants):
+                    if len(found_tours) >= needed_count:
+                        break
+                
+                    try:
+                        country_name = tour_service._get_country_name(search_params['country'])
+                        city_name = tour_service._get_city_name(search_params['departure'])
+                    
+                        logger.debug(f"🔍 Длительный поиск {i+1}/{len(search_variants)}: {country_name} из {city_name}")
+                        logger.debug(f"🔍 Этап 2: Параметры поиска: {search_params}")
+                    
+                        request_id = await tourvisor_client.search_tours(search_params)
+                    
+                        # Ждем до 10 минут
+                        start_time = time.time()
+                        while True:
+                            status = await tourvisor_client.get_search_status(request_id)
+                            if status == "finished" or status == "error":
+                                break
+                            if time.time() - start_time > 600:  # 10 минут
+                                break
+                            await asyncio.sleep(5)
+                    
+                        found_tours_from_search = await self._get_multiple_tours_from_search(request_id, search_params, needed_count - len(found_tours))
+                    
+                        if found_tours_from_search:
+                            found_tours.extend(found_tours_from_search)
+                            logger.debug(f"✅ Этап 2: Найдено {len(found_tours_from_search)} туров из длительного поиска")
+                    
+                        await asyncio.sleep(0.3)
+                    
+                    except Exception as e:
+                        logger.debug(f"🔍 Этап 2: Ошибка длительного поиска {i+1}: {e}")
+                        continue
+        
+            logger.info(f"🔍 Стратегия поиска завершена: найдено {len(found_tours)} туров")
             return found_tours
-            
+        
         except Exception as e:
             logger.error(f"🔍 Ошибка стратегии поиска: {e}")
             return []

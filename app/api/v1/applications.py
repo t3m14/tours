@@ -3,10 +3,11 @@ from datetime import datetime
 from typing import List
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 
-from app.models.application import ApplicationRequest, ApplicationResponse, Application
+from app.models.application import ApplicationRequest, ApplicationResponse, Application, ApplicationRequestRaw
 from app.services.email_service import email_service
 from app.services.cache_service import cache_service
 from app.utils.logger import setup_logger
+from app.config import settings
 
 logger = setup_logger(__name__)
 router = APIRouter()
@@ -72,8 +73,52 @@ async def submit_application(
             status_code=500,
             detail="Произошла ошибка при обработке заявки. Попробуйте еще раз."
         )
+@router.post("/submit/raw", response_model=ApplicationResponse)
+async def submit_raw_application(
+    application_request: ApplicationRequestRaw,
+    background_tasks: BackgroundTasks
+):
+    """
+    Отправка сырого HTML на email
+    """
+    try:
+        # Получаем email из переменных окружения
+        recipient_email = settings.EMAIL_TO
+        
+        if not recipient_email:
+            raise HTTPException(
+                status_code=500,
+                detail="Email получателя не настроен"
+            )
+            
+        # Логируем для отладки
+        logger.info(f"Попытка отправки HTML на email: {recipient_email}")
+        logger.info(f"Содержимое HTML: {application_request.body[:200]}...")  # Логируем первые 200 символов
+            
+        # Отправляем HTML в фоновой задаче
+        await email_service.send_notification_email(
+            "Новое HTML уведомление",
+            application_request.body,
+            recipient_email
+        )
+        
+        logger.info(f"HTML уведомление отправлено на {recipient_email}")
+        
+        return ApplicationResponse(
+            success=True,
+            message="HTML уведомление успешно отправлено",
+            application_id=None
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при отправке HTML уведомления: {e}")
+        logger.error(f"Детали ошибки: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Произошла ошибка при отправке HTML: {str(e)}"
+        )
+    
 
-@router.get("/{application_id}", response_model=Application)
 async def get_application(application_id: str):
     """
     Получение информации о заявке по ID

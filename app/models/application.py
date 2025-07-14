@@ -28,6 +28,15 @@ class ApplicationRequest(BaseModel):
             }
         }
 
+        
+class ApplicationRequestRaw(BaseModel):
+    body: str = Field(..., description="HTML-контент заявки для рендеринга в письме")
+    class Config:
+        schema_extra = {
+            "example": {
+                "body": "<div><h3>Детали заявки</h3><p>Клиент интересуется турами в <strong>Турцию</strong></p><ul><li>Отель: 4-5 звезд</li><li>Питание: Все включено</li><li>Продолжительность: 7 ночей</li></ul></div>"
+            }
+        }
 class ApplicationResponse(BaseModel):
     success: bool
     message: str

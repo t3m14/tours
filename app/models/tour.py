@@ -37,7 +37,7 @@ class TourSearchRequest(BaseModel):
     currency: int = Field(0, description="Валюта: 0-рубли, 1-у.е., 2-бел.рубли, 3-тенге")
     hideregular: Optional[int] = Field(None, description="Скрыть туры на регулярных рейсах")
     services: Optional[str] = Field(None, description="Услуги в отеле через запятую")
-    class TourInfo(BaseModel):
+class TourInfo(BaseModel):
         """Информация о туре - ИСПРАВЛЕННАЯ версия"""
     
         # Основные поля

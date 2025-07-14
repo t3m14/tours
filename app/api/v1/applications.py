@@ -73,51 +73,7 @@ async def submit_application(
             status_code=500,
             detail="Произошла ошибка при обработке заявки. Попробуйте еще раз."
         )
-@router.post("/submit/raw", response_model=ApplicationResponse)
-async def submit_raw_application(
-    application_request: ApplicationRequestRaw,
-    background_tasks: BackgroundTasks
-):
-    """
-    Отправка сырого HTML на email
-    """
-    try:
-        # Получаем email из переменных окружения
-        recipient_email = settings.EMAIL_TO
-        
-        if not recipient_email:
-            raise HTTPException(
-                status_code=500,
-                detail="Email получателя не настроен"
-            )
-            
-        # Логируем для отладки
-        logger.info(f"Попытка отправки HTML на email: {recipient_email}")
-        logger.info(f"Содержимое HTML: {application_request.body[:200]}...")  # Логируем первые 200 символов
-            
-        # Отправляем HTML в фоновой задаче
-        await email_service.send_notification_email(
-            "Новое HTML уведомление",
-            application_request.body,
-            recipient_email
-        )
-        
-        logger.info(f"HTML уведомление отправлено на {recipient_email}")
-        
-        return ApplicationResponse(
-            success=True,
-            message="HTML уведомление успешно отправлено",
-            application_id=None
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка при отправке HTML уведомления: {e}")
-        logger.error(f"Детали ошибки: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Произошла ошибка при отправке HTML: {str(e)}"
-        )
-    
+
 
 async def get_application(application_id: str):
     """
@@ -136,6 +92,93 @@ async def get_application(application_id: str):
     except Exception as e:
         logger.error(f"Ошибка при получении заявки {application_id}: {e}")
         raise HTTPException(status_code=500, detail="Ошибка при получении заявки")
+
+
+
+@router.post("/submit/raw", response_model=ApplicationResponse)
+async def submit_raw_application(
+    application_request: ApplicationRequestRaw,
+    background_tasks: BackgroundTasks
+):
+    """
+    Отправка сырого HTML на email - ОТЛАДОЧНАЯ ВЕРСИЯ
+    """
+    try:
+        # Проверяем настройки
+        recipient_email = settings.EMAIL_TO
+        
+        logger.info(f"=== НАЧАЛО ОТЛАДКИ EMAIL ОТПРАВКИ ===")
+        logger.info(f"📧 EMAIL_TO из settings: '{recipient_email}'")
+        logger.info(f"📧 Тип EMAIL_TO: {type(recipient_email)}")
+        logger.info(f"📧 EMAIL_TO пустой?: {not recipient_email}")
+        
+        # Также проверим email_service настройки
+        logger.info(f"📧 email_service.email_to: '{email_service.email_to}'")
+        logger.info(f"📧 email_service.smtp_username: '{email_service.smtp_username}'")
+        logger.info(f"📧 email_service.smtp_password длина: {len(email_service.smtp_password) if email_service.smtp_password else 0}")
+        
+        if not recipient_email:
+            logger.error("❌ EMAIL_TO не настроен!")
+            raise HTTPException(
+                status_code=500,
+                detail="Email получателя не настроен"
+            )
+            
+        # Исправляем HTML
+        original_html = application_request.body
+        fixed_html = email_service._fix_html_tags(original_html)
+        
+        logger.info(f"📝 Исходный HTML ({len(original_html)} символов): {original_html[:200]}...")
+        logger.info(f"📝 Исправленный HTML ({len(fixed_html)} символов): {fixed_html[:200]}...")
+        
+        # КРИТИЧНО: Отправляем СИНХРОННО для отладки
+        logger.info("🚀 НАЧИНАЕМ СИНХРОННУЮ ОТПРАВКУ (для отладки)...")
+        
+        try:
+            result = await email_service.send_notification_email(
+                "Новая заявка с сайта - ТЕСТ",
+                fixed_html,
+                recipient_email
+            )
+            
+            logger.info(f"🎯 РЕЗУЛЬТАТ ОТПРАВКИ: {result}")
+            
+            if result:
+                logger.info("✅ EMAIL ОТПРАВЛЕН УСПЕШНО!")
+                return ApplicationResponse(
+                    success=True,
+                    message=f"HTML уведомление отправлено на {recipient_email}",
+                    application_id=None
+                )
+            else:
+                logger.error("❌ EMAIL НЕ ОТПРАВЛЕН!")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Ошибка отправки email - проверьте логи"
+                )
+                
+        except Exception as email_error:
+            logger.error(f"❌ ИСКЛЮЧЕНИЕ ПРИ ОТПРАВКЕ EMAIL: {email_error}")
+            logger.error(f"❌ Тип исключения: {type(email_error).__name__}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Ошибка email: {str(email_error)}"
+            )
+        
+    except HTTPException:
+        raise  # Пробрасываем HTTP ошибки как есть
+    except Exception as e:
+        logger.error(f"❌ ОБЩАЯ ОШИБКА В ЭНДПОЙНТЕ: {e}")
+        logger.error(f"❌ Тип ошибки: {type(e).__name__}")
+        import traceback
+        logger.error(f"❌ Полный traceback: {traceback.format_exc()}")
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Критическая ошибка: {str(e)}"
+        )
 
 @router.get("/", response_model=List[Application])
 async def get_all_applications(limit: int = 50, offset: int = 0):

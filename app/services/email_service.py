@@ -280,15 +280,33 @@ ID заявки: {application.id}
             return False
     
     def _send_notification_sync(self, subject: str, body: str, to_email: str) -> bool:
-        """Синхронная отправка уведомления"""
+        """Синхронная отправка уведомления - отправляет HTML как есть"""
         try:
-            msg = MIMEMultipart()
+            logger.info(f"📤 Отправка HTML уведомления: {subject}")
+            logger.info(f"📧 Получатель: {to_email}")
+            logger.info(f"📝 HTML длина: {len(body)} символов")
+            
+            msg = MIMEMultipart('alternative')
             msg['From'] = self.email_from
             msg['To'] = to_email
             msg['Subject'] = subject
             
-            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+            # Создаем текстовую версию (убираем HTML теги для fallback)
+            import re
+            text_body = re.sub('<[^<]+?>', '', body)
+            text_body = text_body.replace('&nbsp;', ' ').strip()
             
+            # HTML версия - просто передаем body как есть, БЕЗ оберток
+            html_body = body  # Вот и всё! Никаких украшений
+            
+            # Добавляем обе версии
+            text_part = MIMEText(text_body, 'plain', 'utf-8')
+            html_part = MIMEText(html_body, 'html', 'utf-8')
+            
+            msg.attach(text_part)
+            msg.attach(html_part)
+            
+            # Отправляем
             with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
                 server.starttls()
                 server.login(self.smtp_username, self.smtp_password)
@@ -296,12 +314,44 @@ ID заявки: {application.id}
                 text = msg.as_string()
                 server.sendmail(self.email_from, to_email, text)
             
+            logger.info("✅ HTML email отправлен успешно!")
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка при отправке уведомления '{subject}': {e}")
+            logger.error(f"❌ Ошибка при отправке HTML уведомления: {e}")
+            logger.error(f"🔍 Детали: {str(e)}")
             return False
-    
+
+    def _fix_html_tags(self, html_content: str) -> str:
+        """Исправляет распространенные ошибки в HTML"""
+        try:
+            # Исправляем неправильные теги
+            html_content = html_content.replace('<ui>', '<ul>')
+            html_content = html_content.replace('</ui>', '</ul>')
+            
+            # Убираем лишние <br/> внутри списков
+            html_content = html_content.replace('<ul><br/>', '<ul>')
+            html_content = html_content.replace('<br/></ul>', '</ul>')
+            
+            # Исправляем структуру списков
+            import re
+            # Ищем паттерн: список без закрытия
+            if '<ul>' in html_content and html_content.count('<ul>') > html_content.count('</ul>'):
+                html_content += '</ul>' * (html_content.count('<ul>') - html_content.count('</ul>'))
+            
+            # Добавляем базовую структуру если её нет
+            if not html_content.strip().startswith('<'):
+                html_content = f'<div>{html_content}</div>'
+            
+            # Убираем двойные пробелы и переносы
+            html_content = re.sub(r'\s+', ' ', html_content)
+            
+            logger.info(f"HTML исправлен: {len(html_content)} символов")
+            return html_content
+            
+        except Exception as e:
+            logger.error(f"Ошибка при исправлении HTML: {e}")
+            return html_content
     async def send_notification_email(self, subject: str, body: str, to_email: Optional[str] = None) -> bool:
         """Отправка уведомления на email (асинхронная обертка)"""
         try:

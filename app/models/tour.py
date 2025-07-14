@@ -37,53 +37,63 @@ class TourSearchRequest(BaseModel):
     currency: int = Field(0, description="Валюта: 0-рубли, 1-у.е., 2-бел.рубли, 3-тенге")
     hideregular: Optional[int] = Field(None, description="Скрыть туры на регулярных рейсах")
     services: Optional[str] = Field(None, description="Услуги в отеле через запятую")
-
-
-class TourInfo(BaseModel):
-    """Информация о туре - ИСПРАВЛЕННАЯ версия"""
+    class TourInfo(BaseModel):
+        """Информация о туре - ИСПРАВЛЕННАЯ версия"""
     
-    # Основные поля
-    operatorcode: str = Field(..., description="Код туроператора")
-    operatorname: str = Field(..., description="Название туроператора") 
-    flydate: str = Field(..., description="Дата вылета")
-    nights: int = Field(..., description="Количество ночей")
-    price: float = Field(..., description="Цена тура")
-    placement: str = Field(..., description="Размещение")
-    adults: int = Field(..., description="Количество взрослых")
-    children: int = Field(0, description="Количество детей")
-    meal: str = Field("", description="Тип питания")
-    room: str = Field("", description="Тип номера")
-    currency: str = Field("RUB", description="Валюта")
+        # Основные поля
+        operatorcode: str = Field(..., description="Код туроператора")
+        operatorname: str = Field(..., description="Название туроператора") 
+        flydate: str = Field(..., description="Дата вылета")
+        nights: int = Field(..., description="Количество ночей")
+        price: float = Field(..., description="Цена тура")
+        placement: str = Field(..., description="Размещение")
+        adults: int = Field(..., description="Количество взрослых")
+        children: int = Field(0, description="Количество детей")
+        meal: Union[str, Dict[str, Any]] = Field("", description="Тип питания")
+        room: str = Field("", description="Тип номера")
+        currency: str = Field("RUB", description="Валюта")
     
-    # ✅ ИСПРАВЛЕННОЕ поле - может быть строкой ИЛИ словарем
-    tourname: Union[str, Dict[str, Any]] = Field("", description="Название тура")
+        # ✅ ИСПРАВЛЕННОЕ поле - может быть строкой ИЛИ словарем
+        tourname: Union[str, Dict[str, Any]] = Field("", description="Название тура")
     
-    # Опциональные поля
-    tourid: Optional[str] = Field(None, description="ID тура для актуализации")
-    fuelcharge: float = Field(0, description="Топливный сбор")
-    operatorlink: Optional[str] = Field(None, description="Ссылка на тур у оператора")
-    regular: Optional[bool] = Field(False, description="Регулярный рейс")
-    promo: Optional[bool] = Field(False, description="Промо тур")
-    onrequest: Optional[bool] = Field(False, description="Под запрос")
+        # Опциональные поля
+        tourid: Optional[str] = Field(None, description="ID тура для актуализации")
+        fuelcharge: float = Field(0, description="Топливный сбор")
+        operatorlink: Optional[str] = Field(None, description="Ссылка на тур у оператора")
+        regular: Optional[bool] = Field(False, description="Регулярный рейс")
+        promo: Optional[bool] = Field(False, description="Промо тур")
+        onrequest: Optional[bool] = Field(False, description="Под запрос")
     
-    # Дополнительные поля
-    mealcode: Optional[str] = Field(None, description="Код типа питания")
-    flightstatus: Optional[int] = Field(None, description="Статус рейса")
-    hotelstatus: Optional[int] = Field(None, description="Статус отеля")
-    nightflight: Optional[int] = Field(None, description="Ночной перелет")
+        # Дополнительные поля
+        mealcode: Optional[str] = Field(None, description="Код типа питания")
+        flightstatus: Optional[int] = Field(None, description="Статус рейса")
+        hotelstatus: Optional[int] = Field(None, description="Статус отеля")
+        nightflight: Optional[int] = Field(None, description="Ночной перелет")
     
 
-    @classmethod
-    @field_validator('tourname', mode='before')
-    def validate_tourname(cls, v):
-        """Конвертируем любое значение в строку"""
-        if isinstance(v, dict):
-            # Если пришел словарь - берем первое значение или пустую строку
-            return str(list(v.values())[0]) if v else ""
-        elif v is None:
-            return ""
-        else:
-            return str(v)
+        @classmethod
+        @field_validator('tourname', mode='before')
+        def validate_tourname(cls, v):
+            """Конвертируем любое значение в строку"""
+            if isinstance(v, dict):
+                # Если пришел словарь - берем первое значение или пустую строку
+                return str(list(v.values())[0]) if v else ""
+            elif v is None:
+                return ""
+            else:
+                return str(v)
+
+        @classmethod
+        @field_validator('meal', mode='before')
+        def validate_meal(cls, v):
+            """Конвертируем любое значение в строку"""
+            if isinstance(v, dict):
+                # Если пришел словарь - берем первое значение или пустую строку
+                return str(list(v.values())[0]) if v else ""
+            elif v is None:
+                return ""
+            else:
+                return str(v)
 class HotelInfo(BaseModel):
     hotelcode: str
     price: float

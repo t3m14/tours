@@ -1,10 +1,24 @@
 version: '3.8'
 
 services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/conf.d:/etc/nginx/conf.d
+    depends_on:
+      - web
+      - frontend
+    restart: unless-stopped
+    networks:
+      - app-network
+
   web:
     build: .
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     environment:
       - REDIS_URL=redis://redis:6379
     depends_on:
@@ -15,15 +29,19 @@ services:
       - .env
     restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - app-network
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    expose:
+      - "6379"
     volumes:
       - redis_data:/data
     restart: unless-stopped
     command: redis-server --appendonly yes
+    networks:
+      - app-network
 
   # Опционально: Redis Commander для управления Redis
   redis-commander:
@@ -37,6 +55,8 @@ services:
       - redis
     profiles:
       - dev
+    networks:
+      - app-network
   
   frontend:
     image: frontend:latest
@@ -45,10 +65,14 @@ services:
     build:
       context: ./a-tour_frontend
       dockerfile: Dockerfile
-    ports:
-      - "3001:3000"
+    expose:
+      - "3000"
+    networks:
+      - app-network
 
 volumes:
   redis_data:
 
-  
+networks:
+  app-network:
+    driver: bridge

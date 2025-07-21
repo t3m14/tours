@@ -146,17 +146,17 @@ app.add_middleware(
 )
 
 # API routes
-app.include_router(tours.router, prefix="/api/v1/tours", tags=["tours"])
-app.include_router(hotels.router, prefix="/api/v1/hotels", tags=["hotels"])
-app.include_router(references.router, prefix="/api/v1/references", tags=["references"])
-app.include_router(applications.router, prefix="/api/v1/applications", tags=["applications"])
+app.include_router(tours.router, prefix="/backend/v1/tours", tags=["tours"])
+app.include_router(hotels.router, prefix="/backend/v1/hotels", tags=["hotels"])
+app.include_router(references.router, prefix="/backend/v1/references", tags=["references"])
+app.include_router(applications.router, prefix="/backend/v1/applications", tags=["applications"])
 app.include_router(sitemap.router, prefix="/sitemap", tags=["sitemap"])
 
 # Подключение роутера направлений
 from app.api.v1.directions import router as directions_router
 app.include_router(
     directions_router, 
-    prefix="/api/v1/directions", 
+    prefix="/backend/v1/directions", 
     tags=["Directions - Новый сервис направлений"]
 )
 
@@ -201,16 +201,16 @@ async def root():
         "cache_management": {
             "directions": {
                 "auto_update": "каждые 24 часа",
-                "status": "/api/v1/directions/cache/status",
-                "force_update": "/api/v1/directions/cache/force-update",
-                "health_check": "/api/v1/directions/cache/health"
+                "status": "/backend/v1/directions/cache/status",
+                "force_update": "/backend/v1/directions/cache/force-update",
+                "health_check": "/backend/v1/directions/cache/health"
             },
             "random_tours": {
                 "auto_update": "каждые 12 часов", 
-                "status": "/api/v1/random-tours/cache/status",
-                "force_update": "/api/v1/random-tours/cache/force-update",
-                "health_check": "/api/v1/random-tours/cache/health",
-                "hotel_types": "/api/v1/random-tours/cache/hotel-types",
+                "status": "/backend/v1/random-tours/cache/status",
+                "force_update": "/backend/v1/random-tours/cache/force-update",
+                "health_check": "/backend/v1/random-tours/cache/health",
+                "hotel_types": "/backend/v1/random-tours/cache/hotel-types",
                 "api_integration": "TourVisor hoteltypes фильтрация"
             }
         }
@@ -362,53 +362,53 @@ async def get_system_info():
         },
         "endpoints": {
             "directions": {
-                "get": "/api/v1/tours/directions",
-                "collect_all": "/api/v1/tours/directions/collect-all",
-                "status": "/api/v1/tours/directions/status",
-                "refresh": "/api/v1/tours/directions/refresh",
+                "get": "/backend/v1/tours/directions",
+                "collect_all": "/backend/v1/tours/directions/collect-all",
+                "status": "/backend/v1/tours/directions/status",
+                "refresh": "/backend/v1/tours/directions/refresh",
                 "new_service": {
-                    "by_country": "/api/v1/directions/country/{country_id}",
-                    "flat_format": "/api/v1/directions/country/{country_id}/flat",
-                    "quick_mode": "/api/v1/directions/country/{country_id}/quick",
-                    "countries_list": "/api/v1/directions/countries/list"
+                    "by_country": "/backend/v1/directions/country/{country_id}",
+                    "flat_format": "/backend/v1/directions/country/{country_id}/flat",
+                    "quick_mode": "/backend/v1/directions/country/{country_id}/quick",
+                    "countries_list": "/backend/v1/directions/countries/list"
                 }
             },
             "cache_management": {
                 "directions": {
-                    "status": "/api/v1/directions/cache/status",
-                    "detailed_stats": "/api/v1/directions/cache/stats",
-                    "health_check": "/api/v1/directions/cache/health",
-                    "force_update": "/api/v1/directions/cache/force-update",
+                    "status": "/backend/v1/directions/cache/status",
+                    "detailed_stats": "/backend/v1/directions/cache/stats",
+                    "health_check": "/backend/v1/directions/cache/health",
+                    "force_update": "/backend/v1/directions/cache/force-update",
                     "scheduler": {
-                        "start": "/api/v1/directions/cache/scheduler/start",
-                        "stop": "/api/v1/directions/cache/scheduler/stop"
+                        "start": "/backend/v1/directions/cache/scheduler/start",
+                        "stop": "/backend/v1/directions/cache/scheduler/stop"
                     }
                 },
                 "random_tours": {
-                    "status": "/api/v1/random-tours/cache/status",
-                    "detailed_stats": "/api/v1/random-tours/cache/stats", 
-                    "health_check": "/api/v1/random-tours/cache/health",
-                    "force_update": "/api/v1/random-tours/cache/force-update",
-                    "clear_cache": "/api/v1/random-tours/cache/clear",
-                    "hotel_types": "/api/v1/random-tours/cache/hotel-types",
-                    "generate_specific": "/api/v1/random-tours/cache/generate/{hotel_type}",
-                    "preview": "/api/v1/random-tours/cache/preview/{hotel_type}",
-                    "compare_strategies": "/api/v1/random-tours/cache/compare-strategies/{hotel_type}",
+                    "status": "/backend/v1/random-tours/cache/status",
+                    "detailed_stats": "/backend/v1/random-tours/cache/stats", 
+                    "health_check": "/backend/v1/random-tours/cache/health",
+                    "force_update": "/backend/v1/random-tours/cache/force-update",
+                    "clear_cache": "/backend/v1/random-tours/cache/clear",
+                    "hotel_types": "/backend/v1/random-tours/cache/hotel-types",
+                    "generate_specific": "/backend/v1/random-tours/cache/generate/{hotel_type}",
+                    "preview": "/backend/v1/random-tours/cache/preview/{hotel_type}",
+                    "compare_strategies": "/backend/v1/random-tours/cache/compare-strategies/{hotel_type}",
                     "scheduler": {
-                        "start": "/api/v1/random-tours/cache/scheduler/start",
-                        "stop": "/api/v1/random-tours/cache/scheduler/stop"
+                        "start": "/backend/v1/random-tours/cache/scheduler/start",
+                        "stop": "/backend/v1/random-tours/cache/scheduler/stop"
                     }
                 }
             },
             "random_tours": {
-                "get": "/api/v1/tours/random",
-                "post": "/api/v1/tours/random",
-                "generate": "/api/v1/tours/random/generate"
+                "get": "/backend/v1/tours/random",
+                "post": "/backend/v1/tours/random",
+                "generate": "/backend/v1/tours/random/generate"
             },
             "search": {
-                "start": "/api/v1/tours/search",
-                "status": "/api/v1/tours/search/{id}/status",
-                "results": "/api/v1/tours/search/{id}/results",
+                "start": "/backend/v1/tours/search",
+                "status": "/backend/v1/tours/search/{id}/status",
+                "results": "/backend/v1/tours/search/{id}/results",
                 "websocket": "/ws/tours/{id}"
             }
         },

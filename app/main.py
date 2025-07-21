@@ -164,7 +164,7 @@ app.include_router(
 from app.api.v1.directions_cache import router as directions_cache_router
 app.include_router(
     directions_cache_router,
-    prefix="/api/v1",
+    prefix="/backend/v1",
     tags=["Directions Cache Management"]
 )
 
@@ -172,7 +172,7 @@ app.include_router(
 from app.api.v1.random_tours_cache import router as random_tours_cache_router
 app.include_router(
     random_tours_cache_router,
-    prefix="/api/v1",
+    prefix="/backend/v1",
     tags=["Random Tours Cache Management"]
 )
 

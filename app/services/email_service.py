@@ -46,7 +46,7 @@ class EmailService:
         msg = MIMEMultipart('alternative')
         msg['From'] = self.email_from
         msg['To'] = self.email_to
-        msg['Subject'] = f"Новая заявка {application.type} - {application.name}"
+        msg['Subject'] = f"Новая заявка {application.type.lower()} - {application.name}"
         
         # Создаем текстовую версию письма (для совместимости)
         text_body = f"""
@@ -154,7 +154,7 @@ ID заявки: {application.id}
 <body>
     <div class="header">
         <h1>Новая заявка с сайта</h1>
-        <p>Тип заявки: <strong>{application.type.lower()}</strong></p>
+        <p>Тип заявки: <strong>{application.type}</strong></p>
         <p>Дата: {application.created_at.strftime('%d.%m.%Y %H:%M:%S')}</p>
     </div>
     

@@ -37,7 +37,7 @@ async def submit_application(
             communication_time=application_request.communication_time,
             description=application_request.description,
             body=application_request.body,  # НОВОЕ ПОЛЕ
-            created_at=datetime.now(tz=timezone(timedelta(hours=5))),
+            created_at=datetime.now(tz=timezone('Asia/Yekaterinburg')),
             status="new"
         )
         

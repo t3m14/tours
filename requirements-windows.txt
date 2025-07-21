@@ -9,7 +9,7 @@ pydantic==1.10.15
 pydantic-settings
 
 # HTTP клиент
-aiohttp==3.9.5
+aiohttp==3.12.14
 
 # Redis для кэширования
 redis==5.0.7

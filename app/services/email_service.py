@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 import html
+import ssl
 
 from app.config import settings
 from app.models.application import Application
@@ -16,12 +17,12 @@ logger = setup_logger(__name__)
 
 class EmailService:
     def __init__(self):
-        # ИСПРАВЛЕНИЕ: Принудительная загрузка Gmail настроек
-        self.smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
-        self.smtp_username = os.getenv("SMTP_USERNAME", "advice.notifications@gmail.com")
-        self.smtp_password = os.getenv("SMTP_PASSWORD", "tven oyop yxgf tltf")
-        self.email_from = os.getenv("EMAIL_FROM", "advice.notifications@gmail.com")
+        # ИСПРАВЛЕНИЕ: Правильные настройки для Yandex SMTP
+        self.smtp_host = os.getenv("SMTP_HOST", "smtp.yandex.ru")  # НЕ imap!
+        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))  # 587 для STARTTLS или 465 для SSL
+        self.smtp_username = os.getenv("SMTP_USERNAME", "alexandratur@yandex.ru")
+        self.smtp_password = os.getenv("SMTP_PASSWORD", "mizgfrbblvrdbtrv")
+        self.email_from = os.getenv("EMAIL_FROM", "alexandratur@yandex.ru")
         self.email_to = os.getenv("EMAIL_TO", "temi4174@mail.ru")
         
         # Очистка от кавычек и пробелов
@@ -229,30 +230,81 @@ ID заявки: {application.id}
         return sanitized
     
     def _send_email_sync(self, msg: MIMEMultipart) -> bool:
-        """Синхронная отправка email"""
+        """Синхронная отправка email с поддержкой разных портов Yandex"""
         try:
-            logger.info(f"📤 Попытка отправки email:")
+            logger.info(f"📤 Попытка отправки email через Yandex:")
             logger.info(f"  Host: {self.smtp_host}:{self.smtp_port}")
             logger.info(f"  Login: {self.smtp_username}")
             logger.info(f"  Password length: {len(self.smtp_password)}")
             logger.info(f"  From: {self.email_from}")
             logger.info(f"  To: {self.email_to}")
             
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_username, self.smtp_password)
-                
-                text = msg.as_string()
-                server.sendmail(self.email_from, self.email_to, text)
+            # Два варианта подключения к Yandex SMTP
+            if self.smtp_port == 465:
+                # SSL соединение для порта 465
+                logger.info("🔐 Используем SSL соединение (порт 465)")
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL(self.smtp_host, self.smtp_port, context=context) as server:
+                    server.login(self.smtp_username, self.smtp_password)
+                    text = msg.as_string()
+                    server.sendmail(self.email_from, self.email_to, text)
+            else:
+                # STARTTLS соединение для порта 587 (по умолчанию)
+                logger.info("🔐 Используем STARTTLS соединение (порт 587)")
+                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                    server.ehlo()  # Добавляем EHLO для лучшей совместимости
+                    server.starttls()
+                    server.ehlo()  # Еще раз после STARTTLS
+                    server.login(self.smtp_username, self.smtp_password)
+                    
+                    text = msg.as_string()
+                    server.sendmail(self.email_from, self.email_to, text)
             
-            logger.info("✅ Email отправлен успешно!")
+            logger.info("✅ Email отправлен успешно через Yandex!")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке email: {e}")
+            logger.error(f"❌ Ошибка при отправке email через Yandex: {e}")
             logger.error(f"🔍 Настройки: host={self.smtp_host}, port={self.smtp_port}")
             logger.error(f"🔍 Username: {self.smtp_username}")
             logger.error(f"🔍 Password: {self.smtp_password[:4]}...{self.smtp_password[-4:]} (len={len(self.smtp_password)})")
+            
+            # Попробуем альтернативные настройки, если основные не работают
+            if self.smtp_port == 587:
+                logger.info("🔄 Пробуем порт 465 с SSL...")
+                return self._try_alternative_smtp(msg, 465, use_ssl=True)
+            elif self.smtp_port == 465:
+                logger.info("🔄 Пробуем порт 587 с STARTTLS...")
+                return self._try_alternative_smtp(msg, 587, use_ssl=False)
+            
+            return False
+    
+    def _try_alternative_smtp(self, msg: MIMEMultipart, alt_port: int, use_ssl: bool = False) -> bool:
+        """Пробуем альтернативные настройки SMTP"""
+        try:
+            logger.info(f"🔄 Альтернативная попытка: порт {alt_port}, SSL={use_ssl}")
+            
+            if use_ssl:
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL(self.smtp_host, alt_port, context=context) as server:
+                    server.login(self.smtp_username, self.smtp_password)
+                    text = msg.as_string()
+                    server.sendmail(self.email_from, self.email_to, text)
+            else:
+                with smtplib.SMTP(self.smtp_host, alt_port) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    server.login(self.smtp_username, self.smtp_password)
+                    
+                    text = msg.as_string()
+                    server.sendmail(self.email_from, self.email_to, text)
+            
+            logger.info(f"✅ Альтернативная отправка успешна! (порт {alt_port})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Альтернативная отправка не удалась: {e}")
             return False
     
     async def send_application_email(self, application: Application) -> bool:
@@ -306,20 +358,42 @@ ID заявки: {application.id}
             msg.attach(text_part)
             msg.attach(html_part)
             
-            # Отправляем
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_username, self.smtp_password)
-                
-                text = msg.as_string()
-                server.sendmail(self.email_from, to_email, text)
-            
-            logger.info("✅ HTML email отправлен успешно!")
-            return True
+            # Используем тот же метод отправки с поддержкой разных портов
+            return self._send_email_sync_base(msg)
             
         except Exception as e:
             logger.error(f"❌ Ошибка при отправке HTML уведомления: {e}")
-            logger.error(f"🔍 Детали: {str(e)}")
+            return False
+
+    def _send_email_sync_base(self, msg: MIMEMultipart) -> bool:
+        """Базовый метод отправки email (без дополнительного логирования)"""
+        try:
+            if self.smtp_port == 465:
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL(self.smtp_host, self.smtp_port, context=context) as server:
+                    server.login(self.smtp_username, self.smtp_password)
+                    text = msg.as_string()
+                    server.sendmail(self.email_from, msg['To'], text)
+            else:
+                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    server.login(self.smtp_username, self.smtp_password)
+                    
+                    text = msg.as_string()
+                    server.sendmail(self.email_from, msg['To'], text)
+            
+            logger.info("✅ Email отправлен успешно!")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Базовая отправка failed: {e}")
+            # Пробуем альтернативный порт
+            if self.smtp_port == 587:
+                return self._try_alternative_smtp(msg, 465, use_ssl=True)
+            elif self.smtp_port == 465:
+                return self._try_alternative_smtp(msg, 587, use_ssl=False)
             return False
 
     def _fix_html_tags(self, html_content: str) -> str:
@@ -352,6 +426,7 @@ ID заявки: {application.id}
         except Exception as e:
             logger.error(f"Ошибка при исправлении HTML: {e}")
             return html_content
+            
     async def send_notification_email(self, subject: str, body: str, to_email: Optional[str] = None) -> bool:
         """Отправка уведомления на email (асинхронная обертка)"""
         try:

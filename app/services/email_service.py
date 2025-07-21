@@ -154,7 +154,7 @@ ID заявки: {application.id}
 <body>
     <div class="header">
         <h1>Новая заявка с сайта</h1>
-        <p>Тип заявки: <strong>{application.type}</strong></p>
+        <p>Тип заявки: <strong>{application.type.lower()}</strong></p>
         <p>Дата: {application.created_at.strftime('%d.%m.%Y %H:%M:%S')}</p>
     </div>
     

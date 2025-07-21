@@ -8,7 +8,8 @@ from app.services.email_service import email_service
 from app.services.cache_service import cache_service
 from app.utils.logger import setup_logger
 from app.config import settings
-
+from pytz import timezone
+from datetime import timedelta
 logger = setup_logger(__name__)
 router = APIRouter()
 
@@ -36,7 +37,7 @@ async def submit_application(
             communication_time=application_request.communication_time,
             description=application_request.description,
             body=application_request.body,  # НОВОЕ ПОЛЕ
-            created_at=datetime.now(),
+            created_at=datetime.now(tz=timezone(timedelta(hours=5))),
             status="new"
         )
         

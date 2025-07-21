@@ -136,7 +136,7 @@ async def submit_raw_application(
         
         try:
             result = await email_service.send_notification_email(
-                "Новая заявка с сайта - ТЕСТ",
+                "Новая заявка с сайта",
                 fixed_html,
                 recipient_email
             )

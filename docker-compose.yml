@@ -11,7 +11,7 @@ services:
     depends_on:
       - web
       - frontend
-    restart: unless-stopped
+    restart: always
     networks:
       - app-network
 
@@ -27,7 +27,7 @@ services:
       - .:/app
     env_file:
       - .env
-    restart: unless-stopped
+    restart: always
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     networks:
       - app-network
@@ -38,12 +38,11 @@ services:
       - "6379"
     volumes:
       - redis_data:/data
-    restart: unless-stopped
+    restart: always
     command: redis-server --appendonly yes
     networks:
       - app-network
 
-  # Опционально: Redis Commander для управления Redis
   redis-commander:
     image: rediscommander/redis-commander:latest
     hostname: redis-commander
@@ -53,6 +52,7 @@ services:
       - REDIS_HOSTS=local:redis:6379
     depends_on:
       - redis
+    restart: always
     profiles:
       - dev
     networks:

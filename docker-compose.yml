@@ -5,9 +5,12 @@ services:
     image: nginx:alpine
     ports:
       - "80:80"
+      - "443:443"  # Добавляем HTTPS порт
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./nginx/conf.d:/etc/nginx/conf.d
+      - /etc/letsencrypt:/etc/letsencrypt:ro  # Добавляем сертификаты
+      - /var/lib/letsencrypt:/var/lib/letsencrypt:ro
     depends_on:
       - web
       - frontend

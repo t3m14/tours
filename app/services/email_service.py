@@ -229,56 +229,31 @@ ID заявки: {application.id}
         
         return sanitized
     
-    def _send_email_sync(self, msg: MIMEMultipart) -> bool:
-        """Синхронная отправка email с поддержкой разных портов Yandex"""
+    def _send_email_sync(self, msg: MIMEMultipart, recipient_email: str):
+        """Синхронная отправка email"""
         try:
-            logger.info(f"📤 Попытка отправки email через Yandex:")
-            logger.info(f"  Host: {self.smtp_host}:{self.smtp_port}")
-            logger.info(f"  Login: {self.smtp_username}")
-            logger.info(f"  Password length: {len(self.smtp_password)}")
-            logger.info(f"  From: {self.email_from}")
-            logger.info(f"  To: {self.email_to}")
+            logger.info(f"🔄 Подключение к SMTP {self.smtp_host}:{self.smtp_port}")
             
-            # Два варианта подключения к Yandex SMTP
-            if self.smtp_port == 465:
-                # SSL соединение для порта 465
-                logger.info("🔐 Используем SSL соединение (порт 465)")
-                context = ssl.create_default_context()
-                with smtplib.SMTP_SSL(self.smtp_host, self.smtp_port, context=context) as server:
-                    server.login(self.smtp_username, self.smtp_password)
-                    text = msg.as_string()
-                    server.sendmail(self.email_from, self.email_to, text)
-            else:
-                # STARTTLS соединение для порта 587 (по умолчанию)
-                logger.info("🔐 Используем STARTTLS соединение (порт 587)")
-                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                    server.ehlo()  # Добавляем EHLO для лучшей совместимости
-                    server.starttls()
-                    server.ehlo()  # Еще раз после STARTTLS
-                    server.login(self.smtp_username, self.smtp_password)
-                    
-                    text = msg.as_string()
-                    server.sendmail(self.email_from, self.email_to, text)
-            
-            logger.info("✅ Email отправлен успешно через Yandex!")
+            # Создаем SMTP соединение
+            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                # Включаем TLS
+                server.starttls(context=ssl.create_default_context())
+                logger.info("🔐 TLS активирован")
+                
+                # Аутентификация
+                server.login(self.smtp_username, self.smtp_password)
+                logger.info(f"🔑 Успешная аутентификация как {self.smtp_username}")
+                
+                # Отправляем письмо
+                text = msg.as_string()
+                server.sendmail(self.email_from, recipient_email, text)
+                logger.info(f"📨 Email отправлен на {recipient_email}")
+                
             return True
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке email через Yandex: {e}")
-            logger.error(f"🔍 Настройки: host={self.smtp_host}, port={self.smtp_port}")
-            logger.error(f"🔍 Username: {self.smtp_username}")
-            logger.error(f"🔍 Password: {self.smtp_password[:4]}...{self.smtp_password[-4:]} (len={len(self.smtp_password)})")
-            
-            # Попробуем альтернативные настройки, если основные не работают
-            if self.smtp_port == 587:
-                logger.info("🔄 Пробуем порт 465 с SSL...")
-                return self._try_alternative_smtp(msg, 465, use_ssl=True)
-            elif self.smtp_port == 465:
-                logger.info("🔄 Пробуем порт 587 с STARTTLS...")
-                return self._try_alternative_smtp(msg, 587, use_ssl=False)
-            
-            return False
-    
+            logger.error(f"❌ Ошибка SMTP отправки: {e}")
+            raise    
     def _try_alternative_smtp(self, msg: MIMEMultipart, alt_port: int, use_ssl: bool = False) -> bool:
         """Пробуем альтернативные настройки SMTP"""
         try:
@@ -307,30 +282,28 @@ ID заявки: {application.id}
             logger.error(f"❌ Альтернативная отправка не удалась: {e}")
             return False
     
-    async def send_application_email(self, application: Application) -> bool:
-        """Отправка email с заявкой (асинхронная обертка)"""
+    async def send_application_email(self, application: Application, recipient_email: Optional[str] = None):
+        """Отправка email с информацией о заявке"""
         try:
+            # Определяем получателя
+            email_to = recipient_email or application.emailTo or self.email_to
+            
+            logger.info(f"📧 Отправка заявки на email: {email_to}")
+            
+            # Создаем email
             msg = self._create_application_email(application)
+            msg['To'] = email_to  # Перезаписываем получателя
             
-            # Выполняем отправку в thread pool чтобы не блокировать event loop
+            # Отправляем в отдельном потоке
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                self.executor, 
-                self._send_email_sync, 
-                msg
-            )
+            await loop.run_in_executor(self.executor, self._send_email_sync, msg, email_to)
             
-            if result:
-                logger.info(f"✅ Email с заявкой {application.id} успешно отправлен")
-            else:
-                logger.error(f"❌ Не удалось отправить email с заявкой {application.id}")
-            
-            return result
+            logger.info(f"✅ Email с заявкой {application.id} отправлен на {email_to}")
+            return True
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке email с заявкой {application.id}: {e}")
+            logger.error(f"❌ Ошибка отправки email заявки {application.id}: {e}")
             return False
-    
     def _send_notification_sync(self, subject: str, body: str, to_email: str) -> bool:
         """Синхронная отправка уведомления - отправляет HTML как есть"""
         try:
@@ -427,31 +400,32 @@ ID заявки: {application.id}
             logger.error(f"Ошибка при исправлении HTML: {e}")
             return html_content
             
-    async def send_notification_email(self, subject: str, body: str, to_email: Optional[str] = None) -> bool:
-        """Отправка уведомления на email (асинхронная обертка)"""
+    async def send_notification_email(self, subject: str, html_body: str, recipient_email: str):
+        """Отправка произвольного email уведомления"""
         try:
-            target_email = to_email or self.email_to
+            logger.info(f"📧 Отправка уведомления на email: {recipient_email}")
             
-            # Выполняем отправку в thread pool
+            # Создаем email
+            msg = MIMEMultipart('alternative')
+            msg['From'] = self.email_from
+            msg['To'] = recipient_email
+            msg['Subject'] = subject
+            
+            # Добавляем HTML контент
+            html_part = MIMEText(html_body, 'html', 'utf-8')
+            msg.attach(html_part)
+            
+            # Отправляем в отдельном потоке
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                self.executor,
-                self._send_notification_sync,
-                subject,
-                body,
-                target_email
-            )
+            await loop.run_in_executor(self.executor, self._send_email_sync, msg, recipient_email)
             
-            if result:
-                logger.info(f"Уведомление '{subject}' успешно отправлено")
-            else:
-                logger.error(f"Не удалось отправить уведомление '{subject}'")
-            
-            return result
+            logger.info(f"✅ Email уведомление отправлено на {recipient_email}")
+            return True
             
         except Exception as e:
-            logger.error(f"Ошибка при отправке уведомления '{subject}': {e}")
+            logger.error(f"❌ Ошибка отправки email уведомления: {e}")
             return False
+
 
 # Создаем экземпляр сервиса
 email_service = EmailService()

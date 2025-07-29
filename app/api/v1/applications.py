@@ -13,6 +13,7 @@ from datetime import timedelta
 logger = setup_logger(__name__)
 router = APIRouter()
 
+
 @router.post("/submit", response_model=ApplicationResponse)
 async def submit_application(
     application_request: ApplicationRequest,
@@ -21,8 +22,7 @@ async def submit_application(
     """
     Отправка заявки с сайта
     
-    Сохраняет заявку и отправляет на email alexandratur@yandex.ru
-    Теперь поддерживает поле 'body' с HTML-контентом для рендеринга в письме
+    Сохраняет заявку и отправляет на указанный email или email по умолчанию
     """
     try:
         # Создаем объект заявки
@@ -36,14 +36,20 @@ async def submit_application(
             nearest_office=application_request.nearest_office,
             communication_time=application_request.communication_time,
             description=application_request.description,
-            body=application_request.body,  # НОВОЕ ПОЛЕ
+            body=application_request.body,
+            emailTo=application_request.emailTo,  # НОВОЕ ПОЛЕ
             created_at=datetime.now(tz=timezone('Asia/Yekaterinburg')),
             status="new"
         )
         
-        # Логируем получение HTML body для отладки
+        # Определяем email получателя
+        recipient_email = application_request.emailTo or settings.EMAIL_TO or "alexandratur@yandex.ru"
+        
+        # Логируем получение заявки
         if application.body:
             logger.info(f"📝 Получен HTML body для заявки {application_id}, длина: {len(application.body)} символов")
+        
+        logger.info(f"📧 Email будет отправлен на: {recipient_email}")
         
         # Сохраняем заявку в кэш (Redis)
         await cache_service.set(
@@ -57,8 +63,12 @@ async def submit_application(
         all_applications.append(application_id)
         await cache_service.set("all_applications", all_applications, ttl=2592000)
         
-        # Отправляем email в фоновой задаче
-        background_tasks.add_task(email_service.send_application_email, application)
+        # Отправляем email в фоновой задаче с указанным получателем
+        background_tasks.add_task(
+            email_service.send_application_email, 
+            application, 
+            recipient_email
+        )
         
         logger.info(f"Создана новая заявка {application_id} от {application.name}")
         
@@ -74,7 +84,6 @@ async def submit_application(
             status_code=500,
             detail="Произошла ошибка при обработке заявки. Попробуйте еще раз."
         )
-
 
 async def get_application(application_id: str):
     """
@@ -95,28 +104,22 @@ async def get_application(application_id: str):
         raise HTTPException(status_code=500, detail="Ошибка при получении заявки")
 
 
-
 @router.post("/submit/raw", response_model=ApplicationResponse)
 async def submit_raw_application(
     application_request: ApplicationRequestRaw,
     background_tasks: BackgroundTasks
 ):
     """
-    Отправка сырого HTML на email - ОТЛАДОЧНАЯ ВЕРСИЯ
+    Отправка сырого HTML на email
     """
     try:
-        # Проверяем настройки
-        recipient_email = settings.EMAIL_TO
+        # Определяем email получателя
+        recipient_email = application_request.emailTo or settings.EMAIL_TO or "alexandratur@yandex.ru"
         
         logger.info(f"=== НАЧАЛО ОТЛАДКИ EMAIL ОТПРАВКИ ===")
-        logger.info(f"📧 EMAIL_TO из settings: '{recipient_email}'")
-        logger.info(f"📧 Тип EMAIL_TO: {type(recipient_email)}")
-        logger.info(f"📧 EMAIL_TO пустой?: {not recipient_email}")
-        
-        # Также проверим email_service настройки
-        logger.info(f"📧 email_service.email_to: '{email_service.email_to}'")
-        logger.info(f"📧 email_service.smtp_username: '{email_service.smtp_username}'")
-        logger.info(f"📧 email_service.smtp_password длина: {len(email_service.smtp_password) if email_service.smtp_password else 0}")
+        logger.info(f"📧 EMAIL_TO из заявки: '{application_request.emailTo}'")
+        logger.info(f"📧 EMAIL_TO из settings: '{settings.EMAIL_TO}'")
+        logger.info(f"📧 Итоговый получатель: '{recipient_email}'")
         
         if not recipient_email:
             logger.error("❌ EMAIL_TO не настроен!")
@@ -132,8 +135,8 @@ async def submit_raw_application(
         logger.info(f"📝 Исходный HTML ({len(original_html)} символов): {original_html[:200]}...")
         logger.info(f"📝 Исправленный HTML ({len(fixed_html)} символов): {fixed_html[:200]}...")
         
-        # КРИТИЧНО: Отправляем СИНХРОННО для отладки
-        logger.info("🚀 НАЧИНАЕМ СИНХРОННУЮ ОТПРАВКУ (для отладки)...")
+        # Отправляем email
+        logger.info("🚀 НАЧИНАЕМ ОТПРАВКУ...")
         
         try:
             result = await email_service.send_notification_email(
@@ -148,11 +151,11 @@ async def submit_raw_application(
                 logger.info("✅ EMAIL ОТПРАВЛЕН УСПЕШНО!")
                 return ApplicationResponse(
                     success=True,
-                    message=f"HTML уведомление отправлено на {recipient_email}",
+                    message=f"Заявка успешно отправлена на {recipient_email}",
                     application_id=None
                 )
             else:
-                logger.error("❌ EMAIL НЕ ОТПРАВЛЕН!")
+                logger.error("❌ EMAIL НЕ ОТПРАВЛЕН")
                 raise HTTPException(
                     status_code=500,
                     detail="Ошибка отправки email - проверьте логи"
@@ -160,22 +163,15 @@ async def submit_raw_application(
                 
         except Exception as email_error:
             logger.error(f"❌ ИСКЛЮЧЕНИЕ ПРИ ОТПРАВКЕ EMAIL: {email_error}")
-            logger.error(f"❌ Тип исключения: {type(email_error).__name__}")
-            import traceback
-            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Ошибка email: {str(email_error)}"
             )
         
     except HTTPException:
-        raise  # Пробрасываем HTTP ошибки как есть
+        raise
     except Exception as e:
         logger.error(f"❌ ОБЩАЯ ОШИБКА В ЭНДПОЙНТЕ: {e}")
-        logger.error(f"❌ Тип ошибки: {type(e).__name__}")
-        import traceback
-        logger.error(f"❌ Полный traceback: {traceback.format_exc()}")
-        
         raise HTTPException(
             status_code=500,
             detail=f"Критическая ошибка: {str(e)}"

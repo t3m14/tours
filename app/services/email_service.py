@@ -41,14 +41,20 @@ class EmailService:
         logger.info(f"  EMAIL_FROM: {self.email_from}")
         logger.info(f"  EMAIL_TO: {self.email_to}")
 
-    def _create_application_email(self, application: Application) -> MIMEMultipart:
-        """Создание email с информацией о заявке"""
+    def _create_application_email(self, application: Application, target_email: str = None) -> MIMEMultipart:
+        """Создание email с информацией о заявке - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+        
+        # 🎯 КРИТИЧНО: Используем переданный target_email
+        recipient = target_email or self.email_to
+        
         msg = MIMEMultipart('alternative')
         msg['From'] = self.email_from
-        msg['To'] = self.email_to
+        msg['To'] = recipient  # ← ВОТ ИСПРАВЛЕНИЕ!
         msg['Subject'] = f"Новая заявка {application.type.lower()} - {application.name}"
         
-        # Создаем текстовую версию письма (для совместимости)
+        logger.info(f"📧 Создан email: From={self.email_from}, To={recipient}")
+        
+        # Создаем текстовую версию письма
         text_body = f"""
 Получена новая заявка с сайта турагентства
 
@@ -68,6 +74,7 @@ Email: {application.email or 'Не указан'}
 === СИСТЕМНАЯ ИНФОРМАЦИЯ ===
 ID заявки: {application.id}
 Статус: {application.status}
+Отправлено на: {recipient}
 
 ---
 Письмо отправлено автоматически системой турагентства
@@ -229,10 +236,14 @@ ID заявки: {application.id}
         
         return sanitized
     
-    def _send_email_sync(self, msg: MIMEMultipart, recipient_email: str):
-        """Синхронная отправка email"""
+    def _send_email_sync(self, msg: MIMEMultipart, target_email: str = None):
+        """Синхронная отправка email - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
         try:
+            # 🎯 КРИТИЧНО: Используем переданный target_email
+            recipient = target_email or self.email_to
+            
             logger.info(f"🔄 Подключение к SMTP {self.smtp_host}:{self.smtp_port}")
+            logger.info(f"📧 Отправка на: {recipient}")
             
             # Создаем SMTP соединение
             with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
@@ -241,19 +252,24 @@ ID заявки: {application.id}
                 logger.info("🔐 TLS активирован")
                 
                 # Аутентификация
-                server.login(self.smtp_username, self.smtp_password)
+                server.login(self.smtp_username, self.smtp_password)  
                 logger.info(f"🔑 Успешная аутентификация как {self.smtp_username}")
                 
-                # Отправляем письмо
+                # 🎯 КРИТИЧНО: Отправляем именно на recipient!
                 text = msg.as_string()
-                server.sendmail(self.email_from, recipient_email, text)
-                logger.info(f"📨 Email отправлен на {recipient_email}")
+                server.sendmail(self.email_from, recipient, text)
+                logger.info(f"📨 Email успешно отправлен на {recipient}")
                 
             return True
             
         except Exception as e:
             logger.error(f"❌ Ошибка SMTP отправки: {e}")
-            raise    
+            # Пробуем альтернативный порт
+            if self.smtp_port == 587:
+                return self._try_alternative_smtp(msg, 465, use_ssl=True, target_email=target_email)
+            elif self.smtp_port == 465:
+                return self._try_alternative_smtp(msg, 587, use_ssl=False, target_email=target_email)
+            return False
     def _try_alternative_smtp(self, msg: MIMEMultipart, alt_port: int, use_ssl: bool = False) -> bool:
         """Пробуем альтернативные настройки SMTP"""
         try:
@@ -282,30 +298,43 @@ ID заявки: {application.id}
             logger.error(f"❌ Альтернативная отправка не удалась: {e}")
             return False
     
-    async def send_application_email(self, application: Application, recipient_email: Optional[str] = None):
-        """Отправка email с информацией о заявке"""
+    async def send_application_email(self, application: Application, recipient_email: Optional[str] = None) -> bool:
+        """Отправка email с заявкой - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
         try:
-            # Определяем получателя
-            email_to = recipient_email or application.emailTo or self.email_to
+            # 🎯 КРИТИЧНО: Определяем получателя с приоритетом
+            target_email = (
+                recipient_email or                   # Переданный параметр
+                application.emailTo or               # Поле из модели заявки  
+                self.email_to                        # Дефолтный из настроек
+            )
             
-            logger.info(f"📧 Отправка заявки на email: {email_to}")
+            logger.info(f"📧 Отправка заявки {application.id} на: {target_email}")
+            logger.info(f"📧 Источник email: recipient_email={recipient_email}, application.emailTo={application.emailTo}, default={self.email_to}")
             
-            # Создаем email
-            msg = self._create_application_email(application)
-            msg['To'] = email_to  # Перезаписываем получателя
+            # Создаем email с правильным получателем
+            msg = self._create_application_email(application, target_email)
             
-            # Отправляем в отдельном потоке
+            # Выполняем отправку в thread pool
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(self.executor, self._send_email_sync, msg, email_to)
+            result = await loop.run_in_executor(
+                self.executor, 
+                self._send_email_sync, 
+                msg,
+                target_email  # ← Передаем target_email!
+            )
             
-            logger.info(f"✅ Email с заявкой {application.id} отправлен на {email_to}")
-            return True
+            if result:
+                logger.info(f"✅ Email с заявкой {application.id} отправлен на {target_email}")
+            else:
+                logger.error(f"❌ Не удалось отправить email с заявкой {application.id}")
+            
+            return result
             
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки email заявки {application.id}: {e}")
+            logger.error(f"❌ Ошибка при отправке email с заявкой {application.id}: {e}")
             return False
     def _send_notification_sync(self, subject: str, body: str, to_email: str) -> bool:
-        """Синхронная отправка уведомления - отправляет HTML как есть"""
+        """Синхронная отправка уведомления - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
         try:
             logger.info(f"📤 Отправка HTML уведомления: {subject}")
             logger.info(f"📧 Получатель: {to_email}")
@@ -313,16 +342,16 @@ ID заявки: {application.id}
             
             msg = MIMEMultipart('alternative')
             msg['From'] = self.email_from
-            msg['To'] = to_email
+            msg['To'] = to_email  # ← Используем переданный email!
             msg['Subject'] = subject
             
-            # Создаем текстовую версию (убираем HTML теги для fallback)
+            # Создаем текстовую версию
             import re
             text_body = re.sub('<[^<]+?>', '', body)
             text_body = text_body.replace('&nbsp;', ' ').strip()
             
-            # HTML версия - просто передаем body как есть, БЕЗ оберток
-            html_body = body  # Вот и всё! Никаких украшений
+            # HTML версия
+            html_body = body
             
             # Добавляем обе версии
             text_part = MIMEText(text_body, 'plain', 'utf-8')
@@ -331,11 +360,11 @@ ID заявки: {application.id}
             msg.attach(text_part)
             msg.attach(html_part)
             
-            # Используем тот же метод отправки с поддержкой разных портов
-            return self._send_email_sync_base(msg)
+            # 🎯 КРИТИЧНО: Отправляем на правильный email!
+            return self._send_email_sync(msg, to_email)
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке HTML уведомления: {e}")
+            logger.error(f"❌ Ошибка синхронной отправки уведомления: {e}")
             return False
 
     def _send_email_sync_base(self, msg: MIMEMultipart) -> bool:
@@ -400,30 +429,31 @@ ID заявки: {application.id}
             logger.error(f"Ошибка при исправлении HTML: {e}")
             return html_content
             
-    async def send_notification_email(self, subject: str, html_body: str, recipient_email: str):
-        """Отправка произвольного email уведомления"""
+    
+    async def send_notification_email(self, subject: str, body: str, recipient_email: str) -> bool:
+        """Отправка произвольного email уведомления - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
         try:
-            logger.info(f"📧 Отправка уведомления на email: {recipient_email}")
+            logger.info(f"📧 Отправка уведомления '{subject}' на: {recipient_email}")
             
-            # Создаем email
-            msg = MIMEMultipart('alternative')
-            msg['From'] = self.email_from
-            msg['To'] = recipient_email
-            msg['Subject'] = subject
-            
-            # Добавляем HTML контент
-            html_part = MIMEText(html_body, 'html', 'utf-8')
-            msg.attach(html_part)
-            
-            # Отправляем в отдельном потоке
+            # Выполняем отправку в thread pool
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(self.executor, self._send_email_sync, msg, recipient_email)
+            result = await loop.run_in_executor(
+                self.executor,
+                self._send_notification_sync,
+                subject,
+                body,
+                recipient_email  # ← Передаем правильный email!
+            )
             
-            logger.info(f"✅ Email уведомление отправлено на {recipient_email}")
-            return True
+            if result:
+                logger.info(f"✅ Уведомление '{subject}' отправлено на {recipient_email}")
+            else:
+                logger.error(f"❌ Не удалось отправить уведомление '{subject}'")
+            
+            return result
             
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки email уведомления: {e}")
+            logger.error(f"❌ Ошибка при отправке уведомления '{subject}': {e}")
             return False
 
 

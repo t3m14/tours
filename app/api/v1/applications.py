@@ -13,7 +13,6 @@ from datetime import timedelta
 logger = setup_logger(__name__)
 router = APIRouter()
 
-
 @router.post("/submit", response_model=ApplicationResponse)
 async def submit_application(
     application_request: ApplicationRequest,
@@ -37,21 +36,27 @@ async def submit_application(
             communication_time=application_request.communication_time,
             description=application_request.description,
             body=application_request.body,
-            emailTo=application_request.emailTo,  # НОВОЕ ПОЛЕ
+            emailTo=application_request.emailTo,  # НОВОЕ ПОЛЕ!
             created_at=datetime.now(tz=timezone('Asia/Yekaterinburg')),
             status="new"
         )
         
-        # Определяем email получателя
-        recipient_email = application_request.emailTo or settings.EMAIL_TO or "alexandratur@yandex.ru"
+        # 🎯 КРИТИЧНО: Определяем email получателя
+        recipient_email = (
+            application_request.emailTo or           # Сначала из заявки
+            settings.EMAIL_TO or                     # Потом из настроек
+            "alexandratur@yandex.ru"                 # И только потом дефолтный
+        )
+        
+        logger.info(f"📧 Заявка {application_id} будет отправлена на: {recipient_email}")
+        logger.info(f"📧 emailTo из заявки: {application_request.emailTo}")
+        logger.info(f"📧 EMAIL_TO из settings: {settings.EMAIL_TO}")
         
         # Логируем получение заявки
         if application.body:
             logger.info(f"📝 Получен HTML body для заявки {application_id}, длина: {len(application.body)} символов")
         
-        logger.info(f"📧 Email будет отправлен на: {recipient_email}")
-        
-        # Сохраняем заявку в кэш (Redis)
+        # Сохраняем заявку в Redis
         await cache_service.set(
             f"application:{application_id}",
             application.model_dump(),
@@ -63,18 +68,18 @@ async def submit_application(
         all_applications.append(application_id)
         await cache_service.set("all_applications", all_applications, ttl=2592000)
         
-        # Отправляем email в фоновой задаче с указанным получателем
+        # 🎯 КРИТИЧНО: Передаем recipient_email в email_service!
         background_tasks.add_task(
             email_service.send_application_email, 
             application, 
-            recipient_email
+            recipient_email  # ← ВОТ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ!
         )
         
         logger.info(f"Создана новая заявка {application_id} от {application.name}")
         
         return ApplicationResponse(
             success=True,
-            message="Заявка успешно отправлена. Мы свяжемся с вами в ближайшее время.",
+            message=f"Заявка успешно отправлена на {recipient_email}. Мы свяжемся с вами в ближайшее время.",
             application_id=application_id
         )
         
@@ -113,11 +118,15 @@ async def submit_raw_application(
     Отправка сырого HTML на email
     """
     try:
-        # Определяем email получателя
-        recipient_email = application_request.emailTo or settings.EMAIL_TO or "alexandratur@yandex.ru"
+        # 🎯 КРИТИЧНО: Определяем email получателя
+        recipient_email = (
+            application_request.emailTo or           # Сначала из заявки
+            settings.EMAIL_TO or                     # Потом из настроек  
+            "alexandratur@yandex.ru"                 # И только потом дефолтный
+        )
         
         logger.info(f"=== НАЧАЛО ОТЛАДКИ EMAIL ОТПРАВКИ ===")
-        logger.info(f"📧 EMAIL_TO из заявки: '{application_request.emailTo}'")
+        logger.info(f"📧 emailTo из заявки: '{application_request.emailTo}'")
         logger.info(f"📧 EMAIL_TO из settings: '{settings.EMAIL_TO}'")
         logger.info(f"📧 Итоговый получатель: '{recipient_email}'")
         
@@ -132,17 +141,15 @@ async def submit_raw_application(
         original_html = application_request.body
         fixed_html = email_service._fix_html_tags(original_html)
         
-        logger.info(f"📝 Исходный HTML ({len(original_html)} символов): {original_html[:200]}...")
-        logger.info(f"📝 Исправленный HTML ({len(fixed_html)} символов): {fixed_html[:200]}...")
+        logger.info(f"📝 Исходный HTML ({len(original_html)} символов)")
+        logger.info(f"📝 Исправленный HTML ({len(fixed_html)} символов)")
         
-        # Отправляем email
-        logger.info("🚀 НАЧИНАЕМ ОТПРАВКУ...")
-        
+        # 🎯 КРИТИЧНО: Передаем recipient_email!
         try:
             result = await email_service.send_notification_email(
                 "Новая заявка с сайта",
                 fixed_html,
-                recipient_email
+                recipient_email  # ← ВОТ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ!
             )
             
             logger.info(f"🎯 РЕЗУЛЬТАТ ОТПРАВКИ: {result}")
